@@ -95,19 +95,25 @@ static void fap_task(void *arg) {
         if (n == 0) continue;  // 无输入:超时后继续等,任务常驻不退出
         for (int i = 0; i < n; i++) {
             char c = (char)buf[i];
-            if (c == '\r') continue;
-            if (c != '\n') {
-                if (used < sizeof(line) - 1) {
-                    line[used++] = c;
-                } else {
-                    used = 0;  // 超长行:丢弃,防止半截内容被误判成命令
-                }
+            if (c == '\r' || c == '\n') {
+                used = 0;  // 行结束:清空滑窗,等下一条
                 continue;
             }
-            if (used == FAP_CMD_LEN && memcmp(line, FAP_CMD, FAP_CMD_LEN) == 0) {
-                dump_screen();
+            if (used < sizeof(line) - 1) {
+                line[used++] = c;
+            } else {
+                // 滑窗已满:丢弃最旧字符,保持"最近 FAP_CMD_LEN 字节"语义
+                memmove(line, line + 1, sizeof(line) - 2);
+                used = sizeof(line) - 2;
+                line[used++] = c;
             }
-            used = 0;
+            // 滑窗触发:只要输入流中出现命令子串即应答,不依赖换行符
+            // (Windows miniterm 的 Enter 处理可能丢 \n,严格行匹配会漏命令)
+            if (used == FAP_CMD_LEN && memcmp(line, FAP_CMD, FAP_CMD_LEN) == 0) {
+                ESP_LOGI(TAG, "收到截屏命令");
+                dump_screen();
+                used = 0;  // 避免残留字符连续误触发
+            }
         }
     }
 }
