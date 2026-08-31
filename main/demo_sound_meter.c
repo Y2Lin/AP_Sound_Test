@@ -1,6 +1,6 @@
 // main/demo_sound_meter.c -- 周围音量检测页(本应用唯一页面,开机由 main.c 加载):
 //   麦克风 RMS -> 伪 SPL 读数 + 五区彩色音量条(带 dB 刻度与峰值保持线)
-//   + 阈值告警(整屏变红) + 自动息屏/唤醒。
+//   + 阈值告警(整屏变红) + 自动息屏/唤醒 + 亮度调节 + 电量显示。
 //
 // UI 设计(240x320,可用区 y≈48..284):
 //   - 大读数(28 号字)按响度分区变色:蓝(静)/绿(正常)/深琥珀(偏响)/橙(很响)/红(极响);
@@ -8,13 +8,25 @@
 //   - 阈值刻度(橙)与峰值保持线(白)叠加在音量条上,一眼读出当前位置与峰值;
 //   - 状态徽章:绿底 MONITOR / 白底红字 ALARM / 灰底 MIC FAIL;
 //   - 统计面板四色标签:PEAK(橙)/AVG(蓝)/TIME(青)/ALARMS(品红),数值随分区变色;
+//   - 右上角电池图标:填充宽度=电量,绿/黄/红三档配色(读不到显灰);
+//   - 吉祥物表情随分区变化:天线灯/脸/眼/嘴换分区色,嘴随响度张大,
+//     偏响以上上下浮动(越响越闹),告警时反白;
+//   - 调亮度时弹出瞬态面板(LIGHT + 百分比 + 进度条),1.5s 后自动隐藏;
 //   - 告警态:屏幕深红、面板红、全部文字变白、徽章反白,与正常态对比强烈。
 //
+// 按键语义:
+//   上/下 短按   亮度 +10 / -10(%,钳到 10..100,经 NVS 持久化)
+//   上/下 长按   亮度 +25 / -25(快调)
+//   确定  短按   清零会话统计
+//   确定  长按   立即息屏(手动;采样与统计继续)
+//
 // 息屏/唤醒:
-//   - 监视(绿)状态下无按键活动 3 分钟 -> 背光关闭;采样与统计继续在暗中运行;
+//   - 监视(绿)状态下无按键活动 3 分钟,或长按 OK -> 背光关闭;
+//     采样与统计继续在暗中运行;
 //   - 触发告警(超过阈值)或音量剧变(偏离慢速 EMA >= 20dB) -> 自动亮屏;
-//   - 任意按键 -> 立即亮屏。所有背光切换统一在采集任务里执行(LEDC
-//     不属于 LVGL,但也不该被按键回调与任务并发修改)。
+//   - 息屏后的第一次按键只亮屏不执行动作(避免黑屏误触改亮度/清统计)。
+//   - 所有背光切换统一在采集任务里执行(LEDC 不属于 LVGL,但也不该被
+//     按键回调与任务并发修改);亮屏恢复到用户设定的亮度而非满亮。
 //
 // 并发与生命周期约定(遵循硬件指南 §8 的音频退出契约):
 //   - bsp_audio_read 会阻塞约一帧(16ms),只能在 worker 任务里调;
@@ -28,8 +40,10 @@
 //   - 纯逻辑见 sound_meter_model.c;本文件只做 I/O、队列、UI 与持久化。
 #include "demo.h"
 #include "bsp_audio.h"
-#include "bsp_display.h"   // bsp_display_backlight:息屏/亮屏
+#include "bsp_battery.h"    // bsp_battery_soc:右上角电量图标
+#include "bsp_display.h"   // bsp_display_backlight:亮度/息屏/亮屏
 #include "ui_pixel.h"
+#include "ui_pixel_math.h"  // 电量映射与吉祥物分区表情(可主机测试)
 #include "sound_meter_model.h"
 #include "lvgl.h"
 #include "freertos/FreeRTOS.h"
@@ -51,8 +65,20 @@ static const char *TAG = "demo_sound";
 #define SM_QUEUE_LEN     8
 #define SM_NVS_NAMESPACE "soundmeter"
 #define SM_NVS_KEY       "alarm_db"
-#define SM_NVS_DEBOUNCE_MS 600               // 阈值停止变化多久后才落盘
+#define SM_NVS_KEY_BL    "bl_pct"
+#define SM_NVS_DEBOUNCE_MS 600               // 阈值/亮度停止变化多久后才落盘
 #define SM_SCREEN_TIMEOUT_MS (3U * 60U * 1000U)   // 无活动息屏:3 分钟
+
+// 背光亮度:上下键调节,钳到 10..100(0 会与息屏混淆),短按 ±10 长按 ±25。
+#define SM_BL_MIN        10
+#define SM_BL_MAX        100
+#define SM_BL_STEP       10
+#define SM_BL_STEP_LONG  25
+#define SM_BL_POPUP_MS   1500               // 亮度瞬态面板显示时长
+
+// 电池:采集任务里周期读 CW2017(312 帧 ≈ 5s),随快照带给 UI。
+#define SM_BATT_EVERY_FRAMES 312
+#define SM_BATT_FILL_W       27              // 电池图标填充区最大宽 px
 
 // 告警态的屏幕配色:背景/面板整体变红,与五区彩条形成强对比。
 #define SM_ALARM_BG    0xB3261E              // 告警:深红屏幕底
@@ -92,6 +118,7 @@ typedef struct {
     uint32_t alarm_count;   // 告警次数
     bool     alarm;
     bool     mic_error;
+    int16_t  soc;           // 电量百分比 0..100;读不到为 -1
 } sm_snapshot_t;
 
 static lv_obj_t   *s_scr, *s_panel_main, *s_panel_stats;
@@ -101,6 +128,11 @@ static lv_obj_t   *s_bar, *s_thr_mark, *s_peak_mark, *s_strip[5], *s_tick[3];
 static lv_obj_t   *s_cap_peak, *s_cap_avg, *s_cap_time, *s_cap_alm;
 static lv_obj_t   *s_val_peak, *s_val_avg, *s_val_time, *s_val_alm;
 static lv_obj_t   *s_hint, *s_mascot;
+// 电池图标:ink 外框 + 纸色内底 + 右侧触点 + 按电量变宽/变色的填充条。
+static lv_obj_t   *s_batt_body, *s_batt_fill;
+// 亮度瞬态面板:调节时显示 1.5s(标题 + 数值 + 进度条),超时自动隐藏。
+static lv_obj_t   *s_bl_panel, *s_bl_val, *s_bl_bar;
+static lv_timer_t *s_bl_popup_timer;
 static lv_timer_t *s_timer;
 
 static TaskHandle_t  s_task;
@@ -112,10 +144,18 @@ static volatile bool s_thr_dirty;       // 阈值已变更,待防抖写 NVS
 static volatile uint32_t s_thr_changed_ms;
 static volatile bool s_screen_off;      // 当前背光关闭(息屏)
 static volatile bool s_screen_wake_req; // 按键请求任务亮屏
+static volatile bool s_screen_off_req;  // OK 长按:请求任务立即息屏
 static volatile uint32_t s_last_activity_ms;   // 最近一次按键/唤醒事件
+static volatile int32_t  s_bright_pct = SM_BL_MAX;  // 当前亮度(10..100)
+static volatile bool     s_bright_apply;  // 亮度已变更,待任务应用到背光
+static volatile bool     s_bright_dirty;  // 亮度已变更,待防抖写 NVS
+static volatile uint32_t s_bright_changed_ms;
 static sound_meter_model_t s_model;     // 归采集任务所有(阈值可由按键原子改)
 static sound_meter_wake_t  s_wake;      // 音量剧变检测(归采集任务所有)
+static volatile int16_t   s_soc = -1;   // 最近一次电量读数(归采集任务)
 static bool s_last_alarm;               // UI 当前呈现的告警态(换色判定)
+static int  s_last_zone;                // UI 当前呈现的响度分区(吉祥物表情)
+static int  s_last_soc_ui;              // UI 当前呈现的电量(图标刷新判定)
 static bool s_nvs_warned;               // NVS 打开失败只告警一次,避免刷屏
 
 static uint32_t now_ms(void) {
@@ -154,6 +194,35 @@ static void threshold_store_nvs(int32_t db) {
         ESP_LOGW(TAG, "NVS 写入失败: %s", esp_err_to_name(err));
 }
 
+// 亮度持久化:与阈值同一套"读取钳位 + 防抖写入"模式。
+static int32_t brightness_load_nvs(void) {
+    nvs_handle_t h;
+    if (nvs_open(SM_NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK)
+        return SM_BL_MAX;                  // 首次使用:满亮
+    uint8_t v = 0;
+    esp_err_t err = nvs_get_u8(h, SM_NVS_KEY_BL, &v);
+    nvs_close(h);
+    if (err != ESP_OK || v < SM_BL_MIN || v > SM_BL_MAX)
+        return SM_BL_MAX;                  // 未写入/越界值:回退满亮
+    return v;
+}
+
+static void brightness_store_nvs(int32_t pct) {
+    nvs_handle_t h;
+    if (nvs_open(SM_NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) {
+        if (!s_nvs_warned) {
+            s_nvs_warned = true;
+            ESP_LOGW(TAG, "NVS 打开失败,亮度仅保留在内存");
+        }
+        return;
+    }
+    esp_err_t err = nvs_set_u8(h, SM_NVS_KEY_BL, (uint8_t)pct);
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    if (err != ESP_OK)
+        ESP_LOGW(TAG, "NVS 写入失败: %s", esp_err_to_name(err));
+}
+
 // --------------------------------------------------------------- 采集任务 ----
 
 // 发布一帧快照到 UI(队列满则丢:UI 每 100ms 只取最新,丢旧帧无损)。
@@ -167,16 +236,18 @@ static void publish_snapshot(bool mic_error) {
         .alarm_count  = s_model.alarm_count,
         .alarm        = s_model.alarm_active,
         .mic_error    = mic_error,
+        .soc          = s_soc,
     };
     (void)xQueueSend(s_queue, &snap, 0);
 }
 
 // 亮屏(只在采集任务里调,统一持有背光的写入权)。
+// 恢复到用户设定的亮度,而不是固定满亮。
 static void screen_on(uint32_t now) {
     s_last_activity_ms = now;
     if (s_screen_off) {
         s_screen_off = false;
-        bsp_display_backlight(100);
+        bsp_display_backlight((uint8_t)s_bright_pct);
         ESP_LOGI(TAG, "亮屏");
     }
 }
@@ -187,6 +258,7 @@ static void sm_task(void *arg) {
     bool was_active = false;
     bool mic_error = false;
     uint32_t frames_since_publish = 0;
+    uint32_t frames_since_batt = SM_BATT_EVERY_FRAMES;   // 激活后立即读一次
 
     for (;;) {
         uint32_t now = now_ms();
@@ -195,6 +267,13 @@ static void sm_task(void *arg) {
         if (s_screen_wake_req) {              // 按键请求亮屏
             s_screen_wake_req = false;
             screen_on(now);
+        } else if (s_screen_off_req) {        // OK 长按:手动立即息屏
+            s_screen_off_req = false;
+            if (!s_screen_off) {
+                s_screen_off = true;
+                bsp_display_backlight(0);
+                ESP_LOGI(TAG, "息屏(长按 OK)");
+            }
         } else if (!s_screen_off && !s_model.alarm_active &&
                    (uint32_t)(now - s_last_activity_ms) >=
                        SM_SCREEN_TIMEOUT_MS) {
@@ -205,12 +284,24 @@ static void sm_task(void *arg) {
             ESP_LOGI(TAG, "息屏(3 分钟无活动)");
         }
 
-        // NVS 防抖落盘:阈值停止变化 600ms 后写一次。放在常驻任务里,
+        // 亮度应用:按键只改数值,LEDC 写入集中在这里(见文件头并发约定)。
+        if (s_bright_apply) {
+            s_bright_apply = false;
+            if (!s_screen_off)
+                bsp_display_backlight((uint8_t)s_bright_pct);
+        }
+
+        // NVS 防抖落盘:阈值/亮度停止变化 600ms 后各写一次。放在常驻任务里,
         // 即使页面已退出(或麦克风失效)也能把最后一次变更写完。
         if (s_thr_dirty &&
             (uint32_t)(now - s_thr_changed_ms) >= SM_NVS_DEBOUNCE_MS) {
             s_thr_dirty = false;   // 先清标志再写:写失败也不无限重试
             threshold_store_nvs(s_model.threshold_db);
+        }
+        if (s_bright_dirty &&
+            (uint32_t)(now - s_bright_changed_ms) >= SM_NVS_DEBOUNCE_MS) {
+            s_bright_dirty = false;
+            brightness_store_nvs(s_bright_pct);
         }
 
         if (!s_active) {
@@ -248,6 +339,13 @@ static void sm_task(void *arg) {
         }
         mic_error = false;
         if (!s_active) continue;   // 读完才发现退出请求:丢弃本帧
+
+        // 电量:每 ~5s 读一次 CW2017(在线时 I2C 读 <1ms,失败也不重试刷屏)。
+        // 读不到(无电量计/未应答)得 -1,UI 显示灰块。
+        if (++frames_since_batt >= SM_BATT_EVERY_FRAMES) {
+            frames_since_batt = 0;
+            s_soc = (int16_t)bsp_battery_soc();
+        }
 
         // RMS:平方和 -> 整数平方根(全整数,C3 无 FPU,不引入软浮点)。
         uint64_t sum_sq = 0;
@@ -313,6 +411,39 @@ static void badge_set(const char *text, uint32_t bg, uint32_t fg) {
     lv_obj_set_style_text_color(s_badge_lbl, lv_color_hex(fg), 0);
 }
 
+// 电池图标刷新(仅 soc 变化时调用):填充宽度=电量百分比,配色三档
+// (>50 绿、20..50 黄、<20 红);读不到(soc<0)整块灰,提示电量未知。
+static void battery_refresh(int soc) {
+    if (soc < 0) {
+        lv_obj_set_style_bg_color(s_batt_body, lv_color_hex(SM_STATE_ERR), 0);
+        lv_obj_set_size(s_batt_fill, 0, 11);
+        return;
+    }
+    lv_obj_set_style_bg_color(s_batt_body, lv_color_hex(UI_PAPER), 0);
+    int level = ui_pixel_battery_level(soc);
+    uint32_t color = (level == 2) ? UI_GRASS
+                   : (level == 1) ? UI_YELLOW : UI_RED;
+    lv_obj_set_size(s_batt_fill, ui_pixel_battery_fill_w(soc, SM_BATT_FILL_W),
+                    11);
+    lv_obj_set_style_bg_color(s_batt_fill, lv_color_hex(color), 0);
+}
+
+// 亮度瞬态面板:调节亮度时短暂显示,超时自动隐藏。定时器平时 paused,
+// 每次调节 reset+resume 重新计时;回调运行在 LVGL 任务(lv_timer)。
+static void bl_popup_hide_cb(lv_timer_t *t) {
+    if (s_bl_panel) lv_obj_add_flag(s_bl_panel, LV_OBJ_FLAG_HIDDEN);
+    lv_timer_pause(t);
+}
+
+static void bl_popup_show(void) {
+    if (!s_bl_panel || !s_bl_popup_timer) return;
+    lv_label_set_text_fmt(s_bl_val, "%d%%", (int)s_bright_pct);
+    lv_bar_set_value(s_bl_bar, (int32_t)s_bright_pct, LV_ANIM_OFF);
+    lv_obj_remove_flag(s_bl_panel, LV_OBJ_FLAG_HIDDEN);
+    lv_timer_reset(s_bl_popup_timer);
+    lv_timer_resume(s_bl_popup_timer);
+}
+
 // 告警态整体换色(在 LVGL 上下文调用:enter 或 lv_timer)。
 // 大读数与统计数值的颜色在 ui_tick 里按分区动态设置,不在此处。
 static void apply_alarm_style(bool alarm) {
@@ -360,6 +491,15 @@ static void ui_tick(lv_timer_t *t) {
     if (!have || s_screen_off) return;
 
     bool alarm = snap.alarm && !snap.mic_error;
+    // 麦克风失效时机器人回到"安静"表情(收不到声音,无从分级)。
+    int zone = snap.mic_error ? (int)SOUND_METER_ZONE_QUIET
+                              : (int)sound_meter_zone_of(snap.db_x10);
+
+    // 电池图标:只在读数变化时重绘(每 ~5s 刷新一次)。
+    if (snap.soc != (int16_t)s_last_soc_ui) {
+        s_last_soc_ui = snap.soc;
+        battery_refresh(snap.soc);
+    }
 
     if (snap.mic_error) {
         lv_label_set_text(s_db, "--.-");
@@ -398,6 +538,12 @@ static void ui_tick(lv_timer_t *t) {
         ui_pixel_mascot_jump(s_mascot);         // 告警边沿:小机器人跳一下
     }
 
+    // 吉祥物表情随分区/告警变化:换色、张嘴、浮动(见 ui_pixel_math 样式表)。
+    if (zone != s_last_zone || alarm != s_last_alarm) {
+        s_last_zone = zone;
+        ui_pixel_mascot_set_zone(s_mascot, zone, alarm);
+    }
+
     int peak = snap.peak_db_x10;
     int mean = snap.mean_db_x10;
     lv_label_set_text_fmt(s_val_peak, "%d.%d", peak / 10, peak % 10);
@@ -430,9 +576,23 @@ void demo_sound_meter_enter(void) {
     s_last_alarm = false;
     s_screen_off = false;
     s_screen_wake_req = false;
+    s_screen_off_req = false;
     s_last_activity_ms = now_ms();
+    s_last_zone = (int)SOUND_METER_ZONE_QUIET;   // 首帧快照会按实测纠正
+    s_last_soc_ui = -2;                          // 与初始 -1 不同,强制首帧刷电池
+
+    // 亮度:防抖未落盘的内存值优先(与阈值同策略),否则读 NVS;
+    // 应用到背光的动作交给采集任务(见文件头并发约定)。
+    if (!s_bright_dirty) s_bright_pct = brightness_load_nvs();
+    s_bright_apply = true;
 
     s_scr = ui_pixel_screen_create("SOUND");
+
+    // ---- 右上角电池图标(标题云下方、主面板上方):ink 框 + 纸底 + 触点 ----
+    block_at(s_scr, 196, 26, 35, 17, UI_INK);
+    s_batt_body = block_at(s_scr, 197, 27, 31, 15, UI_PAPER);
+    block_at(s_scr, 231, 31, 4, 9, UI_INK);
+    s_batt_fill = block_at(s_scr, 199, 29, 0, 11, UI_GRASS);   // 首帧按电量刷新
 
     // ---- 主面板(18,48,204,122):大读数 + 徽章 + 阈值 + 音量条 + 区带标尺 ----
     s_panel_main = ui_pixel_panel_create(s_scr, 18, 48, 204, 122, UI_PAPER);
@@ -521,9 +681,38 @@ void demo_sound_meter_enter(void) {
     s_hint = label_at(s_scr, 10, 270, &lv_font_montserrat_14, SM_HINT_COLOR);
     lv_obj_set_width(s_hint, 170);
     lv_obj_set_style_text_align(s_hint, LV_TEXT_ALIGN_CENTER, 0);
-    lv_label_set_text(s_hint, "UP/DN THR  OK RESET");
+    lv_label_set_text(s_hint, "UP/DN LIGHT  OK RESET");
 
     s_mascot = ui_pixel_mascot_create(s_scr, 189, 238);
+    // 开机先给"安静"表情;首帧快照(80ms 内)会按实测分区切换。
+    ui_pixel_mascot_set_zone(s_mascot, (int)SOUND_METER_ZONE_QUIET, false);
+
+    // ---- 亮度瞬态面板(最后创建,置于最上层;平时隐藏)----
+    s_bl_panel = ui_pixel_panel_create(s_scr, 40, 196, 160, 50, UI_PAPER);
+    {
+        lv_obj_t *cap = label_at(s_bl_panel, 12, 8,
+                                 &lv_font_montserrat_14, SM_CAP_AVG);
+        lv_label_set_text(cap, "LIGHT");
+        s_bl_val = label_at(s_bl_panel, 70, 2, &lv_font_montserrat_20, UI_INK);
+        lv_label_set_text(s_bl_val, "100%");
+        s_bl_bar = lv_bar_create(s_bl_panel);
+        lv_obj_set_pos(s_bl_bar, 12, 32);
+        lv_obj_set_size(s_bl_bar, 136, 12);
+        lv_bar_set_range(s_bl_bar, SM_BL_MIN, SM_BL_MAX);
+        lv_bar_set_value(s_bl_bar, (int32_t)s_bright_pct, LV_ANIM_OFF);
+        lv_obj_set_style_radius(s_bl_bar, 0, LV_PART_MAIN);
+        lv_obj_set_style_radius(s_bl_bar, 0, LV_PART_INDICATOR);
+        lv_obj_set_style_border_width(s_bl_bar, 2, LV_PART_MAIN);
+        lv_obj_set_style_border_color(s_bl_bar, lv_color_hex(UI_INK),
+                                      LV_PART_MAIN);
+        lv_obj_set_style_bg_color(s_bl_bar, lv_color_hex(SM_BAR_TRACK),
+                                  LV_PART_MAIN);
+        lv_obj_set_style_bg_color(s_bl_bar, lv_color_hex(SM_CAP_AVG),
+                                  LV_PART_INDICATOR);
+    }
+    lv_obj_add_flag(s_bl_panel, LV_OBJ_FLAG_HIDDEN);
+    s_bl_popup_timer = lv_timer_create(bl_popup_hide_cb, SM_BL_POPUP_MS, NULL);
+    lv_timer_pause(s_bl_popup_timer);   // 平时不跑,调节时才计时
 
     apply_alarm_style(false);
     refresh_threshold_ui();
@@ -550,12 +739,13 @@ void demo_sound_meter_exit(void) {
     for (int i = 0; i < 50 && !s_idle; i++) vTaskDelay(pdMS_TO_TICKS(1));
     if (!s_idle) ESP_LOGW(TAG, "采集任务停止超时(50ms)");
 
-    // 若在息屏状态被卸载,恢复背光,避免下一界面黑屏。
+    // 若在息屏状态被卸载,恢复背光(用户设定的亮度),避免下一界面黑屏。
     if (s_screen_off) {
         s_screen_off = false;
-        bsp_display_backlight(100);
+        bsp_display_backlight((uint8_t)s_bright_pct);
     }
 
+    if (s_bl_popup_timer) { lv_timer_delete(s_bl_popup_timer); s_bl_popup_timer = NULL; }
     if (s_timer) { lv_timer_delete(s_timer); s_timer = NULL; }
     if (s_scr)   { lv_obj_delete(s_scr); s_scr = NULL; }
     s_panel_main = s_panel_stats = NULL;
@@ -568,32 +758,48 @@ void demo_sound_meter_exit(void) {
     s_val_peak = s_val_avg = s_val_time = s_val_alm = NULL;
     s_hint = NULL;
     s_mascot = NULL;
-    // 任务与队列常驻:下次进入免重建;未落盘的阈值由任务在后台防抖写完。
+    s_batt_body = s_batt_fill = NULL;
+    s_bl_panel = s_bl_val = s_bl_bar = NULL;
+    // 任务与队列常驻:下次进入免重建;未落盘的阈值/亮度由任务在后台防抖写完。
 }
 
 void demo_sound_meter_key(bsp_btn_t btn, bsp_btn_ev_t ev) {
     // 运行于 button 组件任务,main.c 已持有 LVGL 锁:可安全改本页对象。
     // NVS 落盘不在回调里做(防抖交给常驻任务)。
-    // 任意按键都视为活动:请求亮屏并重置 3 分钟息屏计时。
+    // 息屏状态:第一次按键只负责亮屏并吞掉动作,避免黑屏中的误触
+    // 直接改亮度/清统计;亮屏后的下一次按键恢复正常语义。
+    if (s_screen_off) {
+        s_last_activity_ms = now_ms();
+        s_screen_wake_req = true;
+        return;
+    }
     s_last_activity_ms = now_ms();
-    if (s_screen_off) s_screen_wake_req = true;
 
     if (btn == BSP_BTN_UP || btn == BSP_BTN_DOWN) {
-        int steps = 0;
-        if (ev == BSP_BTN_CLICK)      steps = 1;   // 短按:±1 dB
-        else if (ev == BSP_BTN_LONG)  steps = 5;   // 长按:±5 dB 快调
+        // 上下键调亮度:短按 ±10%,长按 ±25% 快调,钳到 10..100。
+        int steps = (ev == BSP_BTN_CLICK) ? SM_BL_STEP
+                   : (ev == BSP_BTN_LONG) ? SM_BL_STEP_LONG : 0;
         if (steps == 0) return;
         int dir = (btn == BSP_BTN_UP) ? 1 : -1;
-        // 对齐的 int32 写,采集任务读取是原子的。
-        s_model.threshold_db =
-            sound_meter_threshold_step(s_model.threshold_db, dir * steps);
-        s_thr_changed_ms = now_ms();
-        s_thr_dirty = true;
-        refresh_threshold_ui();
-        ui_pixel_mascot_jump(s_mascot);
-    } else if (btn == BSP_BTN_OK && ev == BSP_BTN_CLICK) {
-        s_reset_req = true;   // 由采集任务清零,避免与帧更新竞争
-        ui_pixel_mascot_jump(s_mascot);
+        int pct = s_bright_pct + dir * steps;
+        if (pct < SM_BL_MIN) pct = SM_BL_MIN;
+        if (pct > SM_BL_MAX) pct = SM_BL_MAX;
+        if (pct == s_bright_pct) return;   // 已到边界:不动 UI 不写 NVS
+        // 对齐的 int32 写,采集任务读取是原子的;背光应用集中在任务里。
+        s_bright_pct = pct;
+        s_bright_apply = true;
+        s_bright_dirty = true;
+        s_bright_changed_ms = now_ms();
+        bl_popup_show();
+    } else if (btn == BSP_BTN_OK) {
+        if (ev == BSP_BTN_CLICK) {
+            s_reset_req = true;   // 由采集任务清零,避免与帧更新竞争
+            ui_pixel_mascot_jump(s_mascot);
+        } else if (ev == BSP_BTN_LONG) {
+            // 手动息屏:置请求,由采集任务关背光(统一 LEDC 写入权)。
+            // 采样与统计继续,告警/剧变/按键会再亮屏。
+            s_screen_off_req = true;
+        }
     }
-    // OK 长按无操作;双击/按下沿忽略。
+    // 双击/按下沿忽略。
 }

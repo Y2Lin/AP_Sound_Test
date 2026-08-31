@@ -4,16 +4,19 @@
 // (基线仓库的演示菜单见 main 分支,本分支按应用分支惯例将其替换)。
 //
 // 按键语义(全局统一,全部交给页面处理):
-//   上/下 短按   告警阈值 -/+1 dB
-//   上/下 长按   告警阈值 -/+5 dB(快调)
+//   上/下 短按   屏幕亮度 +10 / -10(%,NVS 持久化)
+//   上/下 长按   屏幕亮度 +25 / -25(快调)
 //   确定  短按   清零会话统计
-//   确定  长按   无操作(页面忽略)
-// 屏幕电源:监视状态下 3 分钟无按键活动自动息屏(采集与统计继续);
-// 超过告警阈值或音量剧变会自动亮屏,任意按键也立即亮屏。
+//   确定  长按   立即息屏(采样与统计继续)
+// 屏幕电源:长按 OK 立即息屏;监视状态下 3 分钟无按键活动也自动息屏
+// (采集与统计继续);超过告警阈值或音量剧变会自动亮屏,息屏后的
+// 第一次按键只亮屏不执行动作。
+// 电量:右上角图标显示 CW2017 读数,采集任务周期刷新。
 #include "bsp_i2c.h"
 #include "bsp_display.h"
 #include "bsp_button.h"
 #include "bsp_audio.h"
+#include "bsp_battery.h"
 #include "bsp_pins.h"      // 错误日志里要打印 BSP_LCD_* 引脚号
 #include "demo.h"
 #include "nvs_flash.h"
@@ -62,9 +65,13 @@ void app_main(void) {
     // 按键与音频失败都不阻塞:页面自身有对应的降级表现
     // (无按键=阈值固定为持久化值;无音频=状态行显示 MIC FAIL)。
     if (bsp_button_init(on_key, NULL) != ESP_OK)
-        ESP_LOGE(TAG, "按键初始化失败:无法调节阈值");
+        ESP_LOGE(TAG, "按键初始化失败:无法调节亮度");
     if (bsp_audio_init() != ESP_OK)
         ESP_LOGE(TAG, "音频初始化失败:页面将显示 MIC FAIL");
+
+    // 电量计(CW2017):不在线只影响右上角图标(显灰),不阻塞应用。
+    if (bsp_battery_init() != ESP_OK)
+        ESP_LOGW(TAG, "电量计不可用:电池图标将显示未知");
 
     if (bsp_lvgl_lock(1000)) {
         demo_sound_meter_enter();

@@ -1,4 +1,5 @@
 #include "ui_pixel.h"
+#include "ui_pixel_math.h"
 
 static void start_blink(lv_obj_t *eye);
 
@@ -69,6 +70,18 @@ lv_obj_t *ui_pixel_panel_create(lv_obj_t *parent, int x, int y, int w, int h,
     return panel;
 }
 
+// 吉祥物需要动态换色的部件(分区表情用)。挂在容器 user_data 上;
+// 应用同时只有一个吉祥物,用静态存储,不引入堆分配与释放问题。
+typedef struct {
+    lv_obj_t *antenna;   // 天线灯(顶部小色块)
+    lv_obj_t *face;      // 脸部屏幕底
+    lv_obj_t *eye_l;     // 左眼
+    lv_obj_t *eye_r;     // 右眼
+    lv_obj_t *mouth;     // 嘴(位置/大小按分区变化)
+} mascot_parts_t;
+
+static mascot_parts_t s_parts;
+
 lv_obj_t *ui_pixel_mascot_create(lv_obj_t *parent, int x, int y)
 {
     lv_obj_t *m = lv_obj_create(parent);
@@ -81,22 +94,23 @@ lv_obj_t *ui_pixel_mascot_create(lv_obj_t *parent, int x, int y)
 
     /* 原创“小电视机器人”：天线、发光屏幕脸、橙色围巾与履带脚。 */
     block(m, 18, 0, 3, 6, UI_INK);
-    block(m, 16, 0, 7, 3, UI_ORANGE);
+    s_parts.antenna = block(m, 16, 0, 7, 3, UI_ORANGE);
     block(m, 3, 6, 32, 24, UI_INK);
     block(m, 0, 12, 5, 10, 0x7557D9);
     block(m, 33, 12, 5, 10, 0x7557D9);
-    block(m, 7, 10, 24, 16, 0xB9F3FF);
-    lv_obj_t *left_eye = block(m, 11, 14, 4, 6, 0x294B7A);
-    lv_obj_t *right_eye = block(m, 23, 14, 4, 6, 0x294B7A);
-    block(m, 16, 22, 7, 2, 0x7557D9);
+    s_parts.face = block(m, 7, 10, 24, 16, 0xB9F3FF);
+    s_parts.eye_l = block(m, 11, 14, 4, 6, 0x294B7A);
+    s_parts.eye_r = block(m, 23, 14, 4, 6, 0x294B7A);
+    s_parts.mouth = block(m, 16, 22, 7, 2, 0x7557D9);
     block(m, 10, 29, 18, 4, UI_ORANGE);
     block(m, 8, 33, 22, 11, 0x7557D9);
     block(m, 3, 35, 5, 7, 0xB9F3FF);
     block(m, 30, 35, 5, 7, 0xB9F3FF);
     block(m, 8, 44, 9, 4, UI_INK);
     block(m, 21, 44, 9, 4, UI_INK);
-    start_blink(left_eye);
-    start_blink(right_eye);
+    start_blink(s_parts.eye_l);
+    start_blink(s_parts.eye_r);
+    lv_obj_set_user_data(m, &s_parts);
     return m;
 }
 
@@ -139,6 +153,47 @@ void ui_pixel_mascot_jump(lv_obj_t *mascot)
     lv_anim_set_playback_duration(&anim, 140);
     lv_anim_set_path_cb(&anim, lv_anim_path_step);
     lv_anim_start(&anim);
+}
+
+// 上下浮动(“越响越闹”)。exec 回调与 jump_y 分开,lv_anim_delete 才能
+// 只停浮动不停跳跃,两种动画互不干扰。
+static void bob_y(void *obj, int32_t value)
+{
+    lv_obj_set_y((lv_obj_t *)obj, value);
+}
+
+void ui_pixel_mascot_set_zone(lv_obj_t *mascot, int zone, bool alarm)
+{
+    if (!mascot) return;
+    const ui_pixel_mascot_style_t *st = ui_pixel_mascot_style(zone, alarm);
+    mascot_parts_t *p = lv_obj_get_user_data(mascot);
+    if (!p) return;
+
+    lv_obj_set_style_bg_color(p->antenna, lv_color_hex(st->antenna), 0);
+    lv_obj_set_style_bg_color(p->face, lv_color_hex(st->face), 0);
+    lv_obj_set_style_bg_color(p->eye_l, lv_color_hex(st->eye), 0);
+    lv_obj_set_style_bg_color(p->eye_r, lv_color_hex(st->eye), 0);
+    lv_obj_set_style_bg_color(p->mouth, lv_color_hex(st->mouth), 0);
+
+    // 嘴:宽度/高度随响度张大,水平居中在脸中心(x=19),纵向以 y=23 为底。
+    lv_obj_set_size(p->mouth, st->mouth_w, st->mouth_h);
+    lv_obj_set_pos(p->mouth, 19 - st->mouth_w / 2, 23 - (st->mouth_h + 1) / 2);
+
+    // 浮动:停掉旧的,按新幅度重启;幅度 0(安静/正常)= 静止。
+    lv_anim_delete(mascot, bob_y);
+    if (st->bob_px > 0 && st->bob_ms > 0) {
+        int y = lv_obj_get_y(mascot);
+        lv_anim_t anim;
+        lv_anim_init(&anim);
+        lv_anim_set_var(&anim, mascot);
+        lv_anim_set_exec_cb(&anim, bob_y);
+        lv_anim_set_values(&anim, y, y - st->bob_px);
+        lv_anim_set_duration(&anim, st->bob_ms);
+        lv_anim_set_playback_duration(&anim, st->bob_ms);
+        lv_anim_set_repeat_count(&anim, LV_ANIM_REPEAT_INFINITE);
+        lv_anim_set_path_cb(&anim, lv_anim_path_ease_in_out);
+        lv_anim_start(&anim);
+    }
 }
 
 void ui_pixel_set_selected(lv_obj_t *panel, bool selected, bool enabled)

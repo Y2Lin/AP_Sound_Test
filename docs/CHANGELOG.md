@@ -25,6 +25,24 @@
   keep running; an alarm threshold crossing or a sudden level jump (>= 20 dB
   from the slow EMA, two frames) wakes the screen, and any key wakes it
   immediately.
+- Reworked key semantics: UP/DOWN now adjust backlight brightness (short press
+  ±10%, long press ±25%, clamped to 10..100%, NVS-persisted, with a transient
+  LIGHT popup), while the alarm threshold keeps its persisted value. Long-press
+  OK blanks the screen immediately; the first key press after blanking only
+  wakes the screen (no accidental brightness change or statistic reset), and
+  wake-ups restore the user brightness instead of full brightness.
+- Added a top-right battery icon driven by the CW2017 fuel gauge: the fill
+  width tracks state of charge, colored green/yellow/red by level, and gray
+  when the gauge is unavailable; the acquisition task polls it about every
+  five seconds. Mapping helpers are host-tested.
+- The mascot robot now reacts to loudness zones instead of only jumping on
+  alarm edges: its antenna light, face, eyes, and mouth recolor per zone, the
+  mouth widens as it gets louder, and it bobs faster and higher from moderate
+  upward (alarm recolors it white/red). Zone-to-style mapping is host-tested.
+- Established a validation convention for UI math: color/geometry mappings
+  that must match between firmware and host tests live in `ui_pixel_math`
+  (battery level/fill, mascot zone styles) and are asserted in
+  `test_ui_pixel_math.c`.
 - Made mini-program BLE install compatibility a template-level invariant: fixed
   protected `cardid`/Recovery partitions, retained the five-second UP-key
   Recovery boot hook, and added CI validation for merged-image structure,
