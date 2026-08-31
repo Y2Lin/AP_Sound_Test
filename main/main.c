@@ -19,6 +19,7 @@
 #include "bsp_battery.h"
 #include "bsp_pins.h"      // 错误日志里要打印 BSP_LCD_* 引脚号
 #include "demo.h"
+#include "fap_screenshot.h"
 #include "nvs_flash.h"
 #include "esp_log.h"
 #include "esp_sleep.h"
@@ -77,6 +78,10 @@ void app_main(void) {
         demo_sound_meter_enter();
         bsp_lvgl_unlock();
     }
+
+    // 社区发布助手的串口截屏协议(FAP_SCREENSHOT_V1,只读):
+    // UI 就绪后再起应答任务,保证抓到的是完整页面。
+    fap_screenshot_start();
 
     ESP_LOGI(TAG, "就绪:Sound Meter 应用已启动");
 }

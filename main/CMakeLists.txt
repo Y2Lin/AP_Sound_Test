@@ -4,6 +4,7 @@ idf_component_register(
          "ui_pixel_math.c"
          "demo_sound_meter.c"
          "sound_meter_model.c"
+         "fap_screenshot.c"
     INCLUDE_DIRS "."
-    REQUIRES bsp esp_timer nvs_flash
+    REQUIRES bsp driver esp_timer nvs_flash
 )

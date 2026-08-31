@@ -33,6 +33,9 @@ CONFIG_LV_FONT_MONTSERRAT_14=y
 CONFIG_LV_FONT_MONTSERRAT_20=y
 # 28 号用于音量检测页的大读数(约 +14KB Flash,不影响分区/BLE 契约)。
 CONFIG_LV_FONT_MONTSERRAT_28=y
+# 整屏快照:社区发布助手的 FAP_SCREENSHOT_V1 协议用它把当前屏幕
+# 渲染成 RGB565 帧缓冲,经 USB-CDC 回传给发布工具(只读截屏)。
+CONFIG_LV_USE_SNAPSHOT=y
 # LVGL 内存:用系统堆(C 库 malloc)分配,不用内置静态池。
 # 音量检测页约 90 个对象,实测峰值 ~35KB:24KB 内置池会在构建页面途中
 # 耗尽 -> lv_obj_create 返回 NULL -> 空指针崩溃 -> 开机背光亮但无首帧

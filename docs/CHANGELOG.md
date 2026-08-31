@@ -6,6 +6,13 @@
 
 ## Unreleased
 
+- Added the read-only FAP_SCREENSHOT_V1 serial protocol required by the
+  community publisher: a dedicated task watches the USB-serial console for
+  the `FAP_SCREENSHOT_V1` line and replies with a header plus the current
+  screen rendered as a tight-packed RGB565 framebuffer (LVGL snapshot,
+  logs muted during the binary window). The command is strictly
+  observational — it never reboots, flashes, or touches settings or
+  credentials.
 - Smoothed the on-screen loudness readout: a model-layer asymmetric EMA
   (fast attack ~130 ms, slow release ~0.5 s, Q8 fixed-point, first-frame
   passthrough) replaces the raw per-frame value for the number, bar, and
