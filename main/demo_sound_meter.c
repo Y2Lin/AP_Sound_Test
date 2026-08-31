@@ -129,8 +129,8 @@ static lv_obj_t   *s_bar, *s_thr_mark, *s_peak_mark, *s_strip[5], *s_tick[3];
 static lv_obj_t   *s_cap_peak, *s_cap_avg, *s_cap_time, *s_cap_alm;
 static lv_obj_t   *s_val_peak, *s_val_avg, *s_val_time, *s_val_alm;
 static lv_obj_t   *s_hint, *s_mascot;
-// 电池图标:ink 外框 + 纸色内底 + 右侧触点 + 按电量变宽/变色的填充条。
-static lv_obj_t   *s_batt_body, *s_batt_fill;
+// 电池图标:ink 外框 + 纸色内底 + 右侧触点 + 按电量变宽/变色的填充条 + 百分比文字。
+static lv_obj_t   *s_batt_body, *s_batt_fill, *s_batt_pct;
 // 亮度瞬态面板:调节时显示 1.5s(标题 + 数值 + 进度条),超时自动隐藏。
 static lv_obj_t   *s_bl_panel, *s_bl_val, *s_bl_bar;
 static lv_timer_t *s_bl_popup_timer;
@@ -418,6 +418,7 @@ static void battery_refresh(int soc) {
     if (soc < 0) {
         lv_obj_set_style_bg_color(s_batt_body, lv_color_hex(SM_STATE_ERR), 0);
         lv_obj_set_size(s_batt_fill, 0, 11);
+        lv_label_set_text(s_batt_pct, "--%");
         return;
     }
     lv_obj_set_style_bg_color(s_batt_body, lv_color_hex(UI_PAPER), 0);
@@ -427,6 +428,7 @@ static void battery_refresh(int soc) {
     lv_obj_set_size(s_batt_fill, ui_pixel_battery_fill_w(soc, SM_BATT_FILL_W),
                     11);
     lv_obj_set_style_bg_color(s_batt_fill, lv_color_hex(color), 0);
+    lv_label_set_text_fmt(s_batt_pct, "%d%%", soc);
 }
 
 // 亮度瞬态面板:调节亮度时短暂显示,超时自动隐藏。定时器平时 paused,
@@ -590,10 +592,15 @@ void demo_sound_meter_enter(void) {
     s_scr = ui_pixel_screen_create("SOUND");
 
     // ---- 右上角电池图标(标题云下方、主面板上方):ink 框 + 纸底 + 触点 ----
+    // 百分比文字放电池图标左侧(标题牌右边到电池框之间约 40px 空隙)。
     block_at(s_scr, 196, 26, 35, 17, UI_INK);
     s_batt_body = block_at(s_scr, 197, 27, 31, 15, UI_PAPER);
     block_at(s_scr, 231, 31, 4, 9, UI_INK);
     s_batt_fill = block_at(s_scr, 199, 29, 0, 11, UI_GRASS);   // 首帧按电量刷新
+    s_batt_pct = label_at(s_scr, 152, 31, &lv_font_montserrat_14, UI_INK);
+    lv_obj_set_width(s_batt_pct, 40);
+    lv_obj_set_style_text_align(s_batt_pct, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_label_set_text(s_batt_pct, "--%");
 
     // ---- 主面板(18,48,204,122):大读数 + 徽章 + 阈值 + 音量条 + 区带标尺 ----
     s_panel_main = ui_pixel_panel_create(s_scr, 18, 48, 204, 122, UI_PAPER);
@@ -678,13 +685,14 @@ void demo_sound_meter_enter(void) {
     s_val_alm = label_at(s_panel_stats, 100, 50, &lv_font_montserrat_14, UI_INK);
     lv_label_set_text(s_val_alm, "0");
 
-    // ---- 底部:按键提示 + 吉祥物 ----
-    s_hint = label_at(s_scr, 10, 270, &lv_font_montserrat_14, SM_HINT_COLOR);
-    lv_obj_set_width(s_hint, 170);
+    // ---- 底部:按键提示 + 吉祥物(统计面板下方,不再重叠) ----
+    // 草地装饰已移除;统计面板止于 y=264,吉祥物放 y=268,提示文字与之并排。
+    s_hint = label_at(s_scr, 8, 278, &lv_font_montserrat_14, SM_HINT_COLOR);
+    lv_obj_set_width(s_hint, 178);
     lv_obj_set_style_text_align(s_hint, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_text(s_hint, "UP/DN LIGHT  OK RESET");
 
-    s_mascot = ui_pixel_mascot_create(s_scr, 189, 238);
+    s_mascot = ui_pixel_mascot_create(s_scr, 189, 268);
     // 开机先给"安静"表情;首帧快照(80ms 内)会按实测分区切换。
     ui_pixel_mascot_set_zone(s_mascot, (int)SOUND_METER_ZONE_QUIET, false);
 
@@ -768,7 +776,7 @@ void demo_sound_meter_exit(void) {
     s_val_peak = s_val_avg = s_val_time = s_val_alm = NULL;
     s_hint = NULL;
     s_mascot = NULL;
-    s_batt_body = s_batt_fill = NULL;
+    s_batt_body = s_batt_fill = s_batt_pct = NULL;
     s_bl_panel = s_bl_val = s_bl_bar = NULL;
     // 任务与队列常驻:下次进入免重建;未落盘的阈值/亮度由任务在后台防抖写完。
 }

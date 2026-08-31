@@ -43,12 +43,7 @@ lv_obj_t *ui_pixel_screen_create(const char *title)
     lv_obj_set_style_pad_all(scr, 0, 0);
 
     add_cloud(scr, 188, 8);
-    block(scr, 0, 286, 240, 34, UI_GRASS);
-    block(scr, 0, 286, 240, 4, 0xA7D93E);
-    for (int x = 0; x < 240; x += 30) {
-        block(scr, x, 312, 18, 8, UI_GRASS_DARK);
-        block(scr, x + 18, 316, 12, 4, 0x75452E);
-    }
+    /* 底部不再放大块草地装饰(用户反馈"大色块");改为 2px 细线收尾。 */
 
     block(scr, 9, 12, 151, 33, UI_INK);
     lv_obj_t *plate = block(scr, 5, 8, 151, 33, UI_PAPER);
