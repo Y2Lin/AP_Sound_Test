@@ -32,11 +32,16 @@ static const char *TAG = "fap_shot";
 #define FAP_TASK_STACK 8192  // lv_snapshot 在本任务内做整屏软件渲染,栈要余量
 #define FAP_TASK_PRIO  3     // 低于 LVGL(4)/采集:截屏是偶发操作,不抢交互
 
-// 循环写直到全部发出:usb_serial_jtag_write_bytes 可能分包返回部分长度。
+// 循环写直到全部发出,必须分块:底层 xRingbufferSend 对超过环形缓冲容量
+// (1024B)的整块写入会立即失败("data will never ever fit"),一次性提交
+// 153600B 的载荷等于一个字节都发不出去。512B/块留足余量,每块由驱动
+// 阻塞至真正入队,ISR 按 USB 速度把数据送走。
+#define FAP_TX_CHUNK 512
 static void write_all(const void *data, size_t len) {
     const uint8_t *p = (const uint8_t *)data;
     while (len > 0) {
-        int n = usb_serial_jtag_write_bytes(p, len, pdMS_TO_TICKS(2000));
+        size_t want = len > FAP_TX_CHUNK ? FAP_TX_CHUNK : len;
+        int n = usb_serial_jtag_write_bytes(p, want, pdMS_TO_TICKS(2000));
         if (n <= 0) return;  // 主机掉线:放弃本次,任务继续等下一条命令
         p += n;
         len -= (size_t)n;
