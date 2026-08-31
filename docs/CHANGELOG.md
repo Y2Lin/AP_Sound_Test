@@ -6,6 +6,13 @@
 
 ## Unreleased
 
+- Added an ambient sound meter page (`Sound`): microphone RMS level shown as an
+  uncalibrated pseudo-SPL readout with a volume bar and threshold marker, a
+  40-100 dB adjustable alarm threshold with hysteresis and debounce, alarm
+  recoloring of the whole screen, session peak/mean/duration/alarm-count
+  statistics with OK-key reset, and an NVS-persisted threshold. Level math and
+  the alarm state machine live in a host-testable `sound_meter_model` module
+  wired into the static validation gate.
 - Made mini-program BLE install compatibility a template-level invariant: fixed
   protected `cardid`/Recovery partitions, retained the five-second UP-key
   Recovery boot hook, and added CI validation for merged-image structure,
