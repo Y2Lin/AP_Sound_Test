@@ -53,6 +53,7 @@
 #include "nvs_flash.h"
 #include "esp_timer.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"   // 页面构建后打印系统堆余量(白屏类问题的现场诊断)
 
 static const char *TAG = "demo_sound";
 
@@ -716,6 +717,15 @@ void demo_sound_meter_enter(void) {
 
     apply_alarm_style(false);
     refresh_threshold_ui();
+    // 本页约 90 个对象、峰值 ~35KB(LVGL 走系统堆分配,见 sdkconfig.defaults)。
+    // 余量告警:剩余 < 30KB 时后续分配(动画/文本缓冲)有失败风险。
+    {
+        uint32_t heap_kb = esp_get_free_heap_size() / 1024;
+        if (heap_kb < 30)
+            ESP_LOGW(TAG, "系统堆余量偏低: %u KB", (unsigned)heap_kb);
+        else
+            ESP_LOGI(TAG, "UI 构建完成,系统堆余量 %u KB", (unsigned)heap_kb);
+    }
 
     if (!s_queue) s_queue = xQueueCreate(SM_QUEUE_LEN, sizeof(sm_snapshot_t));
     if (!s_task) {

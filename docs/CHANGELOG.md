@@ -39,6 +39,20 @@
   alarm edges: its antenna light, face, eyes, and mouth recolor per zone, the
   mouth widens as it gets louder, and it bobs faster and higher from moderate
   upward (alarm recolors it white/red). Zone-to-style mapping is host-tested.
+- Fixed a boot white screen: the meter page (~90 objects, about 35 KB of LVGL
+  allocations at peak) no longer fits the template's 24 KB LVGL built-in pool,
+  so `lv_obj_create` returned NULL mid-build and the very next style call
+  dereferenced it while the backlight was already on — no frame was ever
+  rendered. LVGL now allocates from the system heap
+  (`CONFIG_LV_USE_CLIB_MALLOC`): the 24 KB static reservation is reclaimed
+  and the page still leaves well over 100 KB of heap free; entering the page
+  logs the post-build free heap for field diagnosis. Root cause and fix are
+  verified by a host harness that replicates the build sequence with a 24 KB
+  pool (exhausted at object 37) and the full animated runtime (no crash,
+  ~35 KB peak). Defensive hardening in the same class: `app_main` builds the
+  whole page and the esp_timer task runs the key callbacks (which create the
+  brightness panel on demand), both on the default 3584-byte stacks; both are
+  raised to 8 KB, well covered by the reclaimed static DRAM.
 - Established a validation convention for UI math: color/geometry mappings
   that must match between firmware and host tests live in `ui_pixel_math`
   (battery level/fill, mascot zone styles) and are asserted in

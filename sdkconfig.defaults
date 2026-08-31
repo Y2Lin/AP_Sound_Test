@@ -33,9 +33,21 @@ CONFIG_LV_FONT_MONTSERRAT_14=y
 CONFIG_LV_FONT_MONTSERRAT_20=y
 # 28 号用于音量检测页的大读数(约 +14KB Flash,不影响分区/BLE 契约)。
 CONFIG_LV_FONT_MONTSERRAT_28=y
-# LVGL 内置 malloc 池大小(KB)。它是独立静态区、不与系统堆共享,配大了会白白占用 RAM。
-# 本 demo UI 简单,24KB 足够;若自建复杂界面出现绘制卡死/看门狗,调大此值。
-CONFIG_LV_MEM_SIZE_KILOBYTES=24
+# LVGL 内存:用系统堆(C 库 malloc)分配,不用内置静态池。
+# 音量检测页约 90 个对象,实测峰值 ~35KB:24KB 内置池会在构建页面途中
+# 耗尽 -> lv_obj_create 返回 NULL -> 空指针崩溃 -> 开机背光亮但无首帧
+# (白屏)。C3 无 PSRAM,但本应用静态 DRAM 仅 ~37KB,页面建完系统堆仍
+# 剩百余 KB,且免掉静态池的常驻占用。调回内置池需同步核算页面峰值。
+CONFIG_LV_USE_CLIB_MALLOC=y
+
+# --- 任务栈 ---
+# app_main 在自己的任务里构建整个音量检测页(~90 个 LVGL 对象);
+# esp_timer 任务承担按键回调(亮度 LIGHT 面板按需创建)。两者默认
+# 3584B,对 LVGL 对象构建/样式序列偏紧,溢出同样表现为"开机背光亮
+# 但无首帧"。LVGL 改走系统堆后省回 24KB 静态池,静态 DRAM 有富余,
+# 统一放宽到 8KB 消掉这层风险(+9KB,远小于省回量)。
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+CONFIG_ESP_TIMER_TASK_STACK_SIZE=8192
 
 # --- 系统 ---
 CONFIG_FREERTOS_HZ=1000
