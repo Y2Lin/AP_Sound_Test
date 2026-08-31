@@ -146,3 +146,47 @@ int32_t sound_meter_mean_db_x10(const sound_meter_model_t *m) {
 uint32_t sound_meter_session_seconds(uint32_t frames) {
     return (uint32_t)(((uint64_t)frames * SOUND_METER_FRAME_MS) / 1000);
 }
+
+sound_meter_zone_t sound_meter_zone_of(int32_t db_x10) {
+    if (db_x10 < 500) return SOUND_METER_ZONE_QUIET;
+    if (db_x10 < 650) return SOUND_METER_ZONE_NORMAL;
+    if (db_x10 < 750) return SOUND_METER_ZONE_MODERATE;
+    if (db_x10 < 850) return SOUND_METER_ZONE_LOUD;
+    return SOUND_METER_ZONE_EXTREME;
+}
+
+void sound_meter_wake_init(sound_meter_wake_t *w) {
+    w->ema_db_x10 = 0;
+    w->ready       = false;
+    w->latched     = false;
+    w->over_frames = 0;
+}
+
+bool sound_meter_wake_frame(sound_meter_wake_t *w, int32_t db_x10) {
+    if (!w->ready) {                     // 首帧只建立 EMA 基线
+        w->ema_db_x10 = db_x10;
+        w->ready = true;
+        return false;
+    }
+    int32_t delta = db_x10 - w->ema_db_x10;
+    if (delta < 0) delta = -delta;
+    // 先按更新前的偏离判定(反映突变),再让 EMA 缓慢跟上(权重 1/32)。
+    w->ema_db_x10 += (db_x10 - w->ema_db_x10) >> 5;
+
+    int32_t jump_x10 = SOUND_METER_WAKE_JUMP_DB * 10;
+    if (w->latched) {                    // 已触发:等偏离回落后重新武装
+        if (delta < jump_x10 / 2) w->latched = false;
+        return false;
+    }
+    if (delta >= jump_x10) {
+        if (w->over_frames < 255) w->over_frames++;
+        if (w->over_frames >= SOUND_METER_WAKE_JUMP_FRAMES) {
+            w->latched = true;           // 上升沿只报一次
+            w->over_frames = 0;
+            return true;
+        }
+    } else {
+        w->over_frames = 0;              // 单帧毛刺:计数清零
+    }
+    return false;
+}

@@ -15,6 +15,16 @@
   NVS-persisted threshold. Level math and the alarm state machine live in a
   host-testable `sound_meter_model` module wired into the static validation
   gate.
+- Reworked the meter UI for the 240x320 screen: a 28pt zone-colored read
+  (quiet/normal/moderate/loud/extreme), a five-color zone scale with 30/60/90
+  dB ticks under the bar, a white peak-hold line and orange threshold marker on
+  the bar, a status badge (green MONITOR / inverted ALARM / gray MIC FAIL),
+  four-color statistic labels, and an inverted color scheme while alarming.
+- Added automatic screen blanking: after three minutes without key activity in
+  the monitoring state the backlight turns off while sampling and statistics
+  keep running; an alarm threshold crossing or a sudden level jump (>= 20 dB
+  from the slow EMA, two frames) wakes the screen, and any key wakes it
+  immediately.
 - Made mini-program BLE install compatibility a template-level invariant: fixed
   protected `cardid`/Recovery partitions, retained the five-second UP-key
   Recovery boot hook, and added CI validation for merged-image structure,

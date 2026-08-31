@@ -81,3 +81,42 @@ int32_t sound_meter_mean_db_x10(const sound_meter_model_t *m);
 
 // 帧数 -> 会话秒数(向下取整)。
 uint32_t sound_meter_session_seconds(uint32_t frames);
+
+// ---------------------------------------------------------------------------
+// 响度分区(供 UI 配色区分):边界 50/65/75/85 dB。纯查表,主机可测。
+// ---------------------------------------------------------------------------
+typedef enum {
+    SOUND_METER_ZONE_QUIET = 0,   // <  50 dB 安静
+    SOUND_METER_ZONE_NORMAL,      // 50 - 65 dB 正常
+    SOUND_METER_ZONE_MODERATE,    // 65 - 75 dB 偏响
+    SOUND_METER_ZONE_LOUD,        // 75 - 85 dB 很响
+    SOUND_METER_ZONE_EXTREME,     // >= 85  dB 极响
+} sound_meter_zone_t;
+
+// 响度分区数(供 UI 建配色表)。
+#define SOUND_METER_ZONE_COUNT 5
+
+sound_meter_zone_t sound_meter_zone_of(int32_t db_x10);
+
+// ---------------------------------------------------------------------------
+// 突变唤醒检测(息屏后自动亮屏的判定)。
+//   慢速 EMA(权重 1/32)跟踪近期平均电平;瞬时电平偏离 EMA 超过
+//   WAKE_JUMP_DB 且连续 WAKE_JUMP_FRAMES 帧 -> 判定"音量剧变"并置位。
+//   触发后锁存,直到偏离回落到阈值的一半以下才重新武装(滞回,
+//   避免持续高音量期间反复触发)。缓变(坡度小于阈值/31)不触发。
+// ---------------------------------------------------------------------------
+#define SOUND_METER_WAKE_JUMP_DB     20   // 判定剧变的偏离量(dB)
+#define SOUND_METER_WAKE_JUMP_FRAMES  2   // 连续帧数(约 32ms)
+
+typedef struct {
+    int32_t ema_db_x10;   // 慢速 EMA(Q10)
+    bool    ready;        // 已吃入首帧(EMA 有基线)
+    bool    latched;      // 已触发,等待偏离回落后重新武装
+    uint8_t over_frames;  // 连续超偏离帧数
+} sound_meter_wake_t;
+
+void sound_meter_wake_init(sound_meter_wake_t *w);
+
+// 喂入一帧显示分贝。返回 true 表示本帧发生"音量剧变"(上升沿,每次
+// 剧变事件只返回一次)。
+bool sound_meter_wake_frame(sound_meter_wake_t *w, int32_t db_x10);

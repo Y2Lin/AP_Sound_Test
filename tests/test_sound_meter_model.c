@@ -225,13 +225,75 @@ static int test_stats(void) {
     return 0;
 }
 
+static int test_wake(void) {
+    sound_meter_wake_t w;
+    sound_meter_wake_init(&w);
+    EXPECT_EQ(w.ready, false);
+    EXPECT_EQ(w.latched, false);
+
+    // 首帧只建基线,不触发。
+    EXPECT_EQ(sound_meter_wake_frame(&w, 500), false);
+    EXPECT_EQ(w.ready, true);
+    for (int i = 0; i < 10; i++)
+        EXPECT_EQ(sound_meter_wake_frame(&w, 500), false);
+
+    // 单帧尖峰(毛刺):连续帧数不足,不触发。
+    EXPECT_EQ(sound_meter_wake_frame(&w, 800), false);
+    EXPECT_EQ(sound_meter_wake_frame(&w, 500), false);
+    EXPECT_EQ(sound_meter_wake_frame(&w, 500), false);
+
+    // 突升 30dB 且连续 2 帧 -> 第 2 帧触发(上升沿只报一次)。
+    EXPECT_EQ(sound_meter_wake_frame(&w, 800), false);
+    EXPECT_EQ(sound_meter_wake_frame(&w, 800), true);
+    for (int i = 0; i < 5; i++)
+        EXPECT_EQ(sound_meter_wake_frame(&w, 800), false);   // 锁存期不重复
+
+    // EMA 追上后锁存释放(300*(31/32)^n < 100 约需 35 帧,喂 40 帧)。
+    for (int i = 0; i < 40; i++) (void)sound_meter_wake_frame(&w, 800);
+    EXPECT_EQ(w.latched, false);
+
+    // 突降(从响变静)同样算剧变 -> 触发。
+    EXPECT_EQ(sound_meter_wake_frame(&w, 500), false);
+    EXPECT_EQ(sound_meter_wake_frame(&w, 500), true);
+
+    // 缓变(每帧 +0.5dB,持续 60 帧 = +30dB)不触发:
+    // EMA 稳态滞后 = 坡度*31 = 15.5dB < 20dB 阈值。
+    sound_meter_wake_init(&w);
+    (void)sound_meter_wake_frame(&w, 500);
+    for (int i = 1; i <= 60; i++) {
+        if (sound_meter_wake_frame(&w, 500 + i * 5)) {
+            fprintf(stderr, "FAIL %s:%d gradual ramp triggered at frame %d\n",
+                    __FILE__, __LINE__, i);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int test_zones(void) {
+    EXPECT_EQ(sound_meter_zone_of(0), SOUND_METER_ZONE_QUIET);
+    EXPECT_EQ(sound_meter_zone_of(370), SOUND_METER_ZONE_QUIET);   // 静音下限
+    EXPECT_EQ(sound_meter_zone_of(499), SOUND_METER_ZONE_QUIET);
+    EXPECT_EQ(sound_meter_zone_of(500), SOUND_METER_ZONE_NORMAL);  // 边界含
+    EXPECT_EQ(sound_meter_zone_of(649), SOUND_METER_ZONE_NORMAL);
+    EXPECT_EQ(sound_meter_zone_of(650), SOUND_METER_ZONE_MODERATE);
+    EXPECT_EQ(sound_meter_zone_of(749), SOUND_METER_ZONE_MODERATE);
+    EXPECT_EQ(sound_meter_zone_of(750), SOUND_METER_ZONE_LOUD);
+    EXPECT_EQ(sound_meter_zone_of(849), SOUND_METER_ZONE_LOUD);
+    EXPECT_EQ(sound_meter_zone_of(850), SOUND_METER_ZONE_EXTREME);
+    EXPECT_EQ(sound_meter_zone_of(1200), SOUND_METER_ZONE_EXTREME); // 钳位上限
+    return 0;
+}
+
 int main(void) {
-    if (test_isqrt())        return 1;
-    if (test_dbfs())         return 1;
-    if (test_bar_pct())      return 1;
-    if (test_threshold())    return 1;
-    if (test_alarm_fsm())    return 1;
-    if (test_stats())        return 1;
+    if (test_isqrt())     return 1;
+    if (test_dbfs())      return 1;
+    if (test_bar_pct())   return 1;
+    if (test_threshold()) return 1;
+    if (test_alarm_fsm()) return 1;
+    if (test_stats())     return 1;
+    if (test_wake())      return 1;
+    if (test_zones())     return 1;
     printf("sound_meter_model tests: PASS\n");
     return 0;
 }
