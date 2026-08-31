@@ -6,6 +6,22 @@
 
 ## Unreleased
 
+- Smoothed the on-screen loudness readout: a model-layer asymmetric EMA
+  (fast attack ~130 ms, slow release ~0.5 s, Q8 fixed-point, first-frame
+  passthrough) replaces the raw per-frame value for the number, bar, and
+  zone color, so the display settles instead of jumping every 80 ms. Peak
+  and mean statistics and the alarm state machine intentionally keep raw
+  values so transients and alarm response stay accurate, and session reset
+  preserves the smoother so the readout no longer flashes 0.0 after an
+  OK-key reset. Attack/release/convergence behavior is host-tested.
+- Fixed meter-page layout and state issues found in a UI review: the 28 pt
+  reading is right-aligned in a fixed-width box so >= 100 dB values no
+  longer collide with the dB unit or the status badge; the "90" scale tick
+  is right-aligned to the panel edge instead of overflowing it; the
+  loudness-zone word (QUIET..EXTREME) is shown beside the threshold row
+  and follows microphone errors; and the mascot now actually switches to
+  its inverted alarm style on alarm edges (the edge-detect flag was
+  overwritten before the style update ran, so the recolor never fired).
 - Added an ambient sound meter application: the firmware boots directly into
   the meter page, replacing the BSP demo menu (unused demo pages are no longer
   built). Microphone RMS level is shown as an uncalibrated pseudo-SPL readout

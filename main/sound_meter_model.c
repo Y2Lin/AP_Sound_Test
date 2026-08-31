@@ -78,6 +78,8 @@ void sound_meter_model_init(sound_meter_model_t *m, int32_t thr_db) {
     m->alarm_active = false;
     m->over_frames  = 0;
     m->under_frames = 0;
+    m->smooth_db_q  = 0;
+    m->smooth_ready = false;
 }
 
 int32_t sound_meter_threshold_step(int32_t thr_db, int steps_db) {
@@ -98,6 +100,21 @@ int32_t sound_meter_threshold_load(int32_t stored_db) {
 bool sound_meter_model_frame(sound_meter_model_t *m, uint32_t rms) {
     int32_t db = sound_meter_display_db_x10(rms);
     m->last_db_x10 = db;
+
+    // 上屏平滑:首帧直通建立基线;之后快起慢落 EMA(常量含义见头文件)。
+    // 依赖 gcc/clang 的算术右移(与本文件 wake 检测同款写法):负差值
+    // 向 -inf 取整,下降方向不会停滞;上升方向最大残留 7/256≈0.03dB,
+    // 低于 0.1dB 显示分辨率,不可见。
+    int32_t target_q = db << SOUND_METER_SMOOTH_Q;
+    if (!m->smooth_ready) {
+        m->smooth_db_q  = target_q;
+        m->smooth_ready = true;
+    } else {
+        int32_t diff = target_q - m->smooth_db_q;
+        m->smooth_db_q += diff >> ((diff > 0) ? SOUND_METER_SMOOTH_UP_SHIFT
+                                              : SOUND_METER_SMOOTH_DOWN_SHIFT);
+    }
+
     m->frames++;
     m->db_sum_x10 += db;
     if (db > m->peak_db_x10) m->peak_db_x10 = db;
@@ -136,11 +153,18 @@ void sound_meter_model_reset_session(sound_meter_model_t *m) {
     m->alarm_count = 0;
     m->over_frames = 0;
     m->under_frames = 0;
+    // 平滑器保留:清零的是"会话统计",环境响度没变,上屏读数不应跳变。
 }
 
 int32_t sound_meter_mean_db_x10(const sound_meter_model_t *m) {
     if (m->frames == 0) return 0;
     return (int32_t)(m->db_sum_x10 / (int64_t)m->frames);
+}
+
+int32_t sound_meter_smooth_db_x10(const sound_meter_model_t *m) {
+    // 四舍五入回 0.1dB;Q 内部值恒 >= 0(db 已钳到 [0,1200])。
+    return (m->smooth_db_q + (1 << (SOUND_METER_SMOOTH_Q - 1))) >>
+           SOUND_METER_SMOOTH_Q;
 }
 
 uint32_t sound_meter_session_seconds(uint32_t frames) {

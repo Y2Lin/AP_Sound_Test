@@ -3,7 +3,10 @@
 //   + 阈值告警(整屏变红) + 自动息屏/唤醒 + 亮度调节 + 电量显示。
 //
 // UI 设计(240x320,可用区 y≈48..284):
-//   - 大读数(28 号字)按响度分区变色:蓝(静)/绿(正常)/深琥珀(偏响)/橙(很响)/红(极响);
+//   - 大读数(28 号字)右对齐定宽显示,按响度分区变色:蓝(静)/绿(正常)/
+//     深琥珀(偏响)/橙(很响)/红(极响);THR 行右侧有分区文字(QUIET..EXTREME);
+//   - 上屏读数经模型侧"快起慢落"EMA 平滑(见 sound_meter_model.h):
+//     突发变响 ~130ms 跟上,回落 ~0.5s,数字不再 16ms 一跳地抖动;
 //   - 音量条指示条同步分区变色,条下是五色区带(30..90dB 标尺)+ 30/60/90 刻度;
 //   - 阈值刻度(橙)与峰值保持线(白)叠加在音量条上,一眼读出当前位置与峰值;
 //   - 状态徽章:绿底 MONITOR / 白底红字 ALARM / 灰底 MIC FAIL;
@@ -107,6 +110,11 @@ static const uint32_t ZONE_TEXT[SOUND_METER_ZONE_COUNT] = {
     0xE65100,   // 深橙
     0xB3261E,   // 深红
 };
+// 分区英文名(THR 行右侧的分区文字,与读数同色系,便于扫读当前响度级)。
+static const char *ZONE_NAME[SOUND_METER_ZONE_COUNT] = {
+    "QUIET", "NORMAL", "MODERATE", "LOUD", "EXTREME",
+};
+
 // 统计标签色:PEAK/AVG/TIME/ALARMS 各一色,便于扫读。
 #define SM_CAP_PEAK 0xE65100
 #define SM_CAP_AVG  0x1565C0
@@ -114,9 +122,9 @@ static const uint32_t ZONE_TEXT[SOUND_METER_ZONE_COUNT] = {
 #define SM_CAP_ALM  0xAD1457
 
 typedef struct {
-    int32_t  db_x10;        // 最近读数(伪 SPL*10)
-    int32_t  peak_db_x10;   // 会话峰值
-    int32_t  mean_db_x10;   // 会话均值
+    int32_t  db_x10;        // 上屏读数(伪 SPL*10,模型侧已做快起慢落平滑)
+    int32_t  peak_db_x10;   // 会话峰值(原始值,不经平滑)
+    int32_t  mean_db_x10;   // 会话均值(原始值,不经平滑)
     uint32_t frames;        // 会话帧数(时长换算用)
     uint32_t alarm_count;   // 告警次数
     bool     alarm;
@@ -125,7 +133,7 @@ typedef struct {
 } sm_snapshot_t;
 
 static lv_obj_t   *s_scr, *s_panel_main, *s_panel_stats;
-static lv_obj_t   *s_db, *s_db_unit, *s_thr;
+static lv_obj_t   *s_db, *s_db_unit, *s_thr, *s_zone;
 static lv_obj_t   *s_badge, *s_badge_lbl;
 static lv_obj_t   *s_bar, *s_thr_mark, *s_peak_mark, *s_strip[5], *s_tick[3];
 static lv_obj_t   *s_cap_peak, *s_cap_avg, *s_cap_time, *s_cap_alm;
@@ -159,6 +167,7 @@ static sound_meter_wake_t  s_wake;      // 音量剧变检测(归采集任务所
 static volatile int16_t   s_soc = -1;   // 最近一次电量读数(归采集任务)
 static bool s_last_alarm;               // UI 当前呈现的告警态(换色判定)
 static int  s_last_zone;                // UI 当前呈现的响度分区(吉祥物表情)
+static bool s_last_mic_err;             // UI 当前呈现的麦克风失效态(分区文字判定)
 static int  s_last_soc_ui;              // UI 当前呈现的电量(图标刷新判定)
 static bool s_nvs_warned;               // NVS 打开失败只告警一次,避免刷屏
 
@@ -230,10 +239,12 @@ static void brightness_store_nvs(int32_t pct) {
 // --------------------------------------------------------------- 采集任务 ----
 
 // 发布一帧快照到 UI(队列满则丢:UI 每 100ms 只取最新,丢旧帧无损)。
+// db_x10 发平滑显示值(快起慢落 EMA):原始帧值 16ms 一跳,直接上屏数字
+// 会不停抖动;峰值/均值仍发原始统计(峰值要抓真瞬态)。
 static void publish_snapshot(bool mic_error) {
     if (!s_queue) return;
     sm_snapshot_t snap = {
-        .db_x10       = s_model.last_db_x10,
+        .db_x10       = sound_meter_smooth_db_x10(&s_model),
         .peak_db_x10  = s_model.peak_db_x10,
         .mean_db_x10  = sound_meter_mean_db_x10(&s_model),
         .frames       = s_model.frames,
@@ -526,7 +537,8 @@ static void ui_tick(lv_timer_t *t) {
         badge_set(alarm ? "ALARM" : "MONITOR",
                   alarm ? 0xFFFFFF : SM_BADGE_OK_BG,
                   alarm ? SM_ALARM_BG : 0xFFFFFF);
-        // 指示条分区变色;80ms 平滑跟随。告警时反白以示紧急。
+        // 指示条分区变色;值已经模型 EMA 平滑,LVGL 再做 80ms 动画跟随。
+        // 告警时反白以示紧急。
         lv_bar_set_value(s_bar, sound_meter_bar_pct(db), LV_ANIM_ON);
         lv_obj_set_style_bg_color(s_bar,
             lv_color_hex(alarm ? 0xFFFFFF : ZONE_COLOR[z]), LV_PART_INDICATOR);
@@ -542,16 +554,27 @@ static void ui_tick(lv_timer_t *t) {
         }
     }
 
-    if (alarm != s_last_alarm) {
+    // 先快照变化标志再赋值:此前"先写 s_last_alarm 再判断 alarm 是否变化"
+    // 恒为假,告警边沿吉祥物不会反白(只剩跳一下),告警配色丢失。
+    bool alarm_changed = (alarm != s_last_alarm);
+    bool zone_changed  = (zone != s_last_zone);
+    bool mic_changed   = (snap.mic_error != s_last_mic_err);
+    if (alarm_changed) {
         s_last_alarm = alarm;
         apply_alarm_style(alarm);
         ui_pixel_mascot_jump(s_mascot);         // 告警边沿:小机器人跳一下
     }
 
-    // 吉祥物表情随分区/告警变化:换色、张嘴、浮动(见 ui_pixel_math 样式表)。
-    if (zone != s_last_zone || alarm != s_last_alarm) {
+    // 吉祥物表情与分区文字随分区/告警/麦克风态变化(换色、张嘴、浮动)。
+    if (zone_changed || alarm_changed || mic_changed) {
         s_last_zone = zone;
+        s_last_mic_err = snap.mic_error;
         ui_pixel_mascot_set_zone(s_mascot, zone, alarm);
+        lv_label_set_text(s_zone, snap.mic_error ? "--" : ZONE_NAME[zone]);
+        lv_obj_set_style_text_color(s_zone,
+            lv_color_hex(alarm ? 0xFFFFFF
+                               : (snap.mic_error ? SM_MUTED
+                                                 : ZONE_TEXT[zone])), 0);
     }
 
     int peak = snap.peak_db_x10;
@@ -589,6 +612,7 @@ void demo_sound_meter_enter(void) {
     s_screen_off_req = false;
     s_last_activity_ms = now_ms();
     s_last_zone = (int)SOUND_METER_ZONE_QUIET;   // 首帧快照会按实测纠正
+    s_last_mic_err = false;
     s_last_soc_ui = -2;                          // 与初始 -1 不同,强制首帧刷电池
 
     // 亮度:防抖未落盘的内存值优先(与阈值同策略),否则读 NVS;
@@ -613,19 +637,29 @@ void demo_sound_meter_enter(void) {
     // ---- 主面板(18,48,204,122):大读数 + 徽章 + 阈值 + 音量条 + 区带标尺 ----
     s_panel_main = ui_pixel_panel_create(s_scr, 18, 48, 204, 122, UI_PAPER);
 
-    s_db = label_at(s_panel_main, 2, 0, &lv_font_montserrat_28, UI_INK);
+    // 大读数右对齐进 84px 固定框:小数点位置恒定(跳变时观感更稳),
+    // 单位紧跟其后;三位数读数(>=100dB,约 81px)也不会顶到单位。
+    s_db = label_at(s_panel_main, 0, 0, &lv_font_montserrat_28, UI_INK);
+    lv_obj_set_width(s_db, 84);
+    lv_obj_set_style_text_align(s_db, LV_TEXT_ALIGN_RIGHT, 0);
     lv_label_set_text(s_db, "--.-");
-    s_db_unit = label_at(s_panel_main, 74, 12, &lv_font_montserrat_14, SM_MUTED);
+    s_db_unit = label_at(s_panel_main, 88, 12, &lv_font_montserrat_14, SM_MUTED);
     lv_label_set_text(s_db_unit, "dB");
 
-    s_badge = block_at(s_panel_main, 106, 2, 76, 30, SM_BADGE_OK_BG);
+    s_badge = block_at(s_panel_main, 110, 2, 72, 30, SM_BADGE_OK_BG);
     s_badge_lbl = label_at(s_badge, 0, 8, &lv_font_montserrat_14, 0xFFFFFF);
-    lv_obj_set_width(s_badge_lbl, 76);
+    lv_obj_set_width(s_badge_lbl, 72);
     lv_obj_set_style_text_align(s_badge_lbl, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_text(s_badge_lbl, "MONITOR");
 
     s_thr = label_at(s_panel_main, 2, 36, &lv_font_montserrat_14, SM_CAP_PEAK);
     lv_label_set_text(s_thr, "THR -- dB");
+    // 分区文字(QUIET..EXTREME):右对齐到内缘,填满 THR 行右侧空白,
+    // 颜色随分区(ui_tick 里与吉祥物同步刷新);首帧前显示 "--"。
+    s_zone = label_at(s_panel_main, 92, 36, &lv_font_montserrat_14, SM_MUTED);
+    lv_obj_set_width(s_zone, 90);
+    lv_obj_set_style_text_align(s_zone, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_label_set_text(s_zone, "--");
 
     s_bar = lv_bar_create(s_panel_main);
     lv_obj_set_pos(s_bar, 0, 54);
@@ -659,15 +693,18 @@ void demo_sound_meter_enter(void) {
         }
     }
 
-    // dB 刻度数字:30/60/90 对齐区带两端与中点。
+    // dB 刻度数字:30/60/90 对齐区带两端与中点;"90"右对齐到内缘(182),
+    // 左对齐会从 x=167 溢出进面板右侧留白。
     {
         static const char *TICK_TXT[3] = {"30", "60", "90"};
-        static const int   TICK_X[3]   = {0, 84, 167};
+        static const int   TICK_X[3]   = {0, 84, 160};
         for (int i = 0; i < 3; i++) {
             s_tick[i] = label_at(s_panel_main, TICK_X[i], 84,
                                  &lv_font_montserrat_14, SM_MUTED);
             lv_label_set_text(s_tick[i], TICK_TXT[i]);
         }
+        lv_obj_set_width(s_tick[2], 22);
+        lv_obj_set_style_text_align(s_tick[2], LV_TEXT_ALIGN_RIGHT, 0);
     }
 
     // ---- 统计面板(18,176,204,88):四色标签 + 数值 ----
@@ -777,7 +814,7 @@ void demo_sound_meter_exit(void) {
     if (s_timer) { lv_timer_delete(s_timer); s_timer = NULL; }
     if (s_scr)   { lv_obj_delete(s_scr); s_scr = NULL; }
     s_panel_main = s_panel_stats = NULL;
-    s_db = s_db_unit = s_thr = NULL;
+    s_db = s_db_unit = s_thr = s_zone = NULL;
     s_badge = s_badge_lbl = NULL;
     s_bar = s_thr_mark = s_peak_mark = NULL;
     for (int i = 0; i < SOUND_METER_ZONE_COUNT; i++) s_strip[i] = NULL;

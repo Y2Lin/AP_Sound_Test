@@ -225,6 +225,59 @@ static int test_stats(void) {
     return 0;
 }
 
+static int test_smooth(void) {
+    sound_meter_model_t m;
+    sound_meter_model_init(&m, 65);
+    EXPECT_EQ(sound_meter_smooth_db_x10(&m), 0);      // 未喂帧为 0
+
+    // 首帧直通:立即建立基线,无起步爬坡。
+    (void)sound_meter_model_frame(&m, RMS_50DB);
+    EXPECT_NEAR(sound_meter_smooth_db_x10(&m), 500, 2);
+
+    // 恒定电平:长期喂入仍收敛在原值(±0.2dB),不漂移。
+    EXPECT_EQ(feed(&m, RMS_50DB, 100), false);
+    EXPECT_NEAR(sound_meter_smooth_db_x10(&m), 500, 2);
+
+    // 突升 20dB:快通道第 1 帧走约 1/8(+2.5dB),不是瞬时跳变;
+    // 8 帧(~130ms)走完约 2/3;40 帧后收敛。
+    (void)sound_meter_model_frame(&m, RMS_70DB);
+    int32_t s1 = sound_meter_smooth_db_x10(&m);
+    if (s1 < 515 || s1 > 545) {
+        fprintf(stderr, "FAIL %s:%d smooth attack frame1 = %lld (want ~525)\n",
+                __FILE__, __LINE__, (long long)s1);
+        return 1;
+    }
+    (void)feed(&m, RMS_70DB, 7);                      // 累计 8 帧
+    int32_t s8 = sound_meter_smooth_db_x10(&m);
+    if (s8 < 610 || s8 > 690) {   // (7/8)^8≈0.34 -> 走完约 66%
+        fprintf(stderr, "FAIL %s:%d smooth attack frame8 = %lld (want ~631)\n",
+                __FILE__, __LINE__, (long long)s8);
+        return 1;
+    }
+    (void)feed(&m, RMS_70DB, 40);
+    EXPECT_NEAR(sound_meter_smooth_db_x10(&m), 700, 2);
+
+    // 原始读数与峰值统计不经过平滑(峰值抓真瞬态)。
+    EXPECT_NEAR(m.last_db_x10, 700, 2);
+    EXPECT_NEAR(m.peak_db_x10, 700, 2);
+
+    // 突降 20dB:慢通道 8 帧后只走约 1/4(~0.5s 时间常数),读数缓落。
+    (void)feed(&m, RMS_50DB, 8);
+    int32_t d8 = sound_meter_smooth_db_x10(&m);
+    if (d8 < 630 || d8 > 695) {   // (31/32)^8≈0.78 -> 还剩约 78%
+        fprintf(stderr, "FAIL %s:%d smooth release frame8 = %lld (want ~655)\n",
+                __FILE__, __LINE__, (long long)d8);
+        return 1;
+    }
+    (void)feed(&m, RMS_50DB, 200);
+    EXPECT_NEAR(sound_meter_smooth_db_x10(&m), 500, 2);
+
+    // 清零会话统计:平滑器保留(环境响度没变,上屏读数不跳变)。
+    sound_meter_model_reset_session(&m);
+    EXPECT_NEAR(sound_meter_smooth_db_x10(&m), 500, 2);
+    return 0;
+}
+
 static int test_wake(void) {
     sound_meter_wake_t w;
     sound_meter_wake_init(&w);
@@ -292,6 +345,7 @@ int main(void) {
     if (test_threshold()) return 1;
     if (test_alarm_fsm()) return 1;
     if (test_stats())     return 1;
+    if (test_smooth())    return 1;
     if (test_wake())      return 1;
     if (test_zones())     return 1;
     printf("sound_meter_model tests: PASS\n");

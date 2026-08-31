@@ -32,6 +32,17 @@
 // 每帧样本数 256 @ 16kHz -> 16ms。统计换算时长时用。
 #define SOUND_METER_FRAME_MS 16
 
+// 上屏读数的时间计权(快起慢落 EMA,类比声级计 F/S 档):
+//   原始帧读数 16ms 一跳,直接上屏数字会不停抖动;显示值改为定点 EMA。
+//   上升(突发变响)走快通道,权重 1/8,约 8 帧(~130ms,等同 IEC Fast 档)
+//   跟上,喊一嗓子读数立刻有反应;下降走慢通道,权重 1/32,约 32 帧
+//   (~0.5s)回落,读数不再"跳水"。EMA 内部多带 8 位小数,避免整数截断
+//   造成的停滞/漂移。告警状态机、峰值/均值统计仍用原始值(峰值要抓
+//   真瞬态,告警要快速响应),只有上屏的大数字/音量条/分区用平滑值。
+#define SOUND_METER_SMOOTH_Q          8   // EMA 内部小数位数
+#define SOUND_METER_SMOOTH_UP_SHIFT   3   // 上升权重 1/8(快,~130ms)
+#define SOUND_METER_SMOOTH_DOWN_SHIFT 5   // 下降权重 1/32(慢,~0.5s)
+
 // 会话模型。除 threshold_db 可由按键回调原子改写(int32 对齐写)外,
 // 其余字段只允许持有它的采集任务读写。
 typedef struct {
@@ -44,6 +55,8 @@ typedef struct {
     bool     alarm_active;   // 当前是否处于告警态
     uint8_t  over_frames;    // 连续超阈值帧数(状态机去抖)
     uint8_t  under_frames;   // 连续低于解除线帧数(状态机去抖)
+    int32_t  smooth_db_q;    // 上屏平滑读数(dB*10 << SMOOTH_Q)
+    bool     smooth_ready;   // 平滑器已吃入首帧(首帧直通,免起步爬坡)
 } sound_meter_model_t;
 
 // 整数平方根:返回 floor(sqrt(v))。v=0 返回 0。
@@ -78,6 +91,10 @@ void sound_meter_model_reset_session(sound_meter_model_t *m);
 
 // 会话平均分贝*10;frames==0 时返回 0。
 int32_t sound_meter_mean_db_x10(const sound_meter_model_t *m);
+
+// 上屏用平滑分贝*10(四舍五入到 0.1 dB,快起慢落 EMA,见上方常量说明)。
+// 大读数/音量条/分区配色用此值;尚未喂帧时返回 0。
+int32_t sound_meter_smooth_db_x10(const sound_meter_model_t *m);
 
 // 帧数 -> 会话秒数(向下取整)。
 uint32_t sound_meter_session_seconds(uint32_t frames);
