@@ -9,8 +9,10 @@
 - Added the read-only FAP_SCREENSHOT_V1 serial protocol required by the
   community publisher: a dedicated task watches the USB-serial console for
   the `FAP_SCREENSHOT_V1` line and replies with a header plus the current
-  screen rendered as a tight-packed RGB565 framebuffer (LVGL snapshot,
-  logs muted during the binary window). The task installs the
+  screen rendered as a tight-packed RGB565 framebuffer (LVGL snapshot into a
+  statically reserved full-screen buffer — the runtime heap is too fragmented
+  for a 150 KB contiguous allocation — with logs muted during the binary
+  window). The task installs the
   USB-serial-JTAG driver itself (the app boots no REPL, so nothing else
   does) and moves the console onto the driver path, matching the official
   REPL combination. The command is strictly observational — it never

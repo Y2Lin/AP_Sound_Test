@@ -14,6 +14,7 @@
 //     (主机按声明长度精确读取,任何插入字节都会错位)。
 #include "fap_screenshot.h"
 #include "bsp_display.h"       // bsp_lvgl_lock / bsp_lvgl_unlock
+#include "bsp_pins.h"          // BSP_LCD_W / BSP_LCD_H(快照缓冲尺寸)
 #include "driver/usb_serial_jtag_vfs.h"  // 控制台 VFS 切到驱动通道
 #include "esp_log.h"
 #include "driver/usb_serial_jtag.h"
@@ -42,37 +43,53 @@ static void write_all(const void *data, size_t len) {
     }
 }
 
-// 渲染当前屏幕并以协议格式回传。快照失败(堆不足)只记日志不应答,
-// 主机会以超时给出明确错误,不破坏流格式。
+// 渲染当前屏幕并以协议格式回传。失败只记日志不应答,主机会以超时给出
+// 明确错误,不破坏流格式。
+//
+// 整屏快照缓冲:静态预留。运行时堆虽然还有 ~220KB,却拿不出 153600
+// 字节的连续块(碎片化),动态分配的快照必然失败;编译期预留则永不受
+// 碎片影响。64 字节对齐满足软件渲染的行距/搬运要求。
+#define FAP_SNAP_BYTES ((uint32_t)BSP_LCD_W * BSP_LCD_H * 2)
+static lv_draw_buf_t s_snap_desc;
+static uint8_t s_snap_buf[FAP_SNAP_BYTES] __attribute__((aligned(64)));
+
 static void dump_screen(void) {
-    lv_draw_buf_t *snap = NULL;
-    if (bsp_lvgl_lock(2000)) {
-        snap = lv_snapshot_take(lv_screen_active(), LV_COLOR_FORMAT_RGB565);
-        bsp_lvgl_unlock();
-    }
-    if (!snap) {
-        ESP_LOGE(TAG, "快照失败:堆不足或 LVGL 忙,空闲堆 %lu 字节",
-                 (unsigned long)esp_get_free_heap_size());
+    if (!bsp_lvgl_lock(2000)) {
+        ESP_LOGE(TAG, "拿不到 LVGL 锁,放弃本次截屏");
         return;
     }
-    // LVGL 默认行距无填充(240*2=480B),防御性核对,不符则宁可不应答。
-    uint32_t len = (uint32_t)snap->data_size;
-    if (len != (uint32_t)snap->header.w * snap->header.h * 2) {
-        ESP_LOGE(TAG, "行距含填充(%lu),不符合 RGB565LE 紧排约定", (unsigned long)len);
-        lv_draw_buf_destroy(snap);
+    // 用官方 lv_snapshot_take_to_buf 的内部模式:外部缓冲 + 描述符,
+    // 渲染直接写入 s_snap_buf,不经过 LVGL 堆分配。
+    lv_draw_buf_init(&s_snap_desc, BSP_LCD_W, BSP_LCD_H, LV_COLOR_FORMAT_RGB565,
+                     0, s_snap_buf, FAP_SNAP_BYTES);
+    lv_result_t r = lv_snapshot_take_to_draw_buf(lv_screen_active(),
+                                                 LV_COLOR_FORMAT_RGB565,
+                                                 &s_snap_desc);
+    bsp_lvgl_unlock();
+    if (r != LV_RESULT_OK) {
+        ESP_LOGE(TAG, "快照渲染失败:屏幕外延绘制超出静态缓冲");
+        return;
+    }
+    // 防御性核对:必须是紧排 RGB565 整屏,不符宁可不应答。
+    uint32_t len = (uint32_t)s_snap_desc.data_size;
+    if (s_snap_desc.header.w != BSP_LCD_W || s_snap_desc.header.h != BSP_LCD_H
+            || len != FAP_SNAP_BYTES) {
+        ESP_LOGE(TAG, "快照 %ldx%ld(%lu) 不符紧排约定",
+                 (long)s_snap_desc.header.w, (long)s_snap_desc.header.h,
+                 (unsigned long)len);
         return;
     }
 
     char header[48];
     int n = snprintf(header, sizeof(header), "%s %d %d RGB565LE %lu\n",
-                     FAP_CMD, snap->header.w, snap->header.h, (unsigned long)len);
-    int w = snap->header.w, h = snap->header.h;
+                     FAP_CMD, (int)BSP_LCD_W, (int)BSP_LCD_H,
+                     (unsigned long)len);
     esp_log_level_set("*", ESP_LOG_NONE);  // 传输窗口内禁一切日志,见文件头注释
     write_all(header, (size_t)n);
-    write_all(snap->data, len);
+    write_all(s_snap_buf, len);
     esp_log_level_set("*", ESP_LOG_INFO);  // 恢复到 sdkconfig 的默认日志级别
-    lv_draw_buf_destroy(snap);
-    ESP_LOGI(TAG, "已回传截屏 %dx%d(%lu 字节)", w, h, (unsigned long)len);
+    ESP_LOGI(TAG, "已回传截屏 %dx%d(%lu 字节)", (int)BSP_LCD_W, (int)BSP_LCD_H,
+             (unsigned long)len);
 }
 
 // 串口应答任务:攒行匹配命令,其余输入(日志回显、换行等)一律忽略。
