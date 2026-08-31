@@ -14,6 +14,7 @@
 //     (主机按声明长度精确读取,任何插入字节都会错位)。
 #include "fap_screenshot.h"
 #include "bsp_display.h"       // bsp_lvgl_lock / bsp_lvgl_unlock
+#include "driver/usb_serial_jtag_vfs.h"  // 控制台 VFS 切到驱动通道
 #include "esp_log.h"
 #include "driver/usb_serial_jtag.h"
 #include "freertos/FreeRTOS.h"
@@ -119,5 +120,28 @@ static void fap_task(void *arg) {
 }
 
 void fap_screenshot_start(void) {
-    xTaskCreate(fap_task, "fap_shot", FAP_TASK_STACK, NULL, FAP_TASK_PRIO, NULL);
+    // 本应用不启动 REPL,而控制台日志走的是 VFS 寄存器直写通道,
+    // 全固件没有任何人安装过 USB 串口驱动——不装驱动,read_bytes 会
+    // 解引用空指针(这正是早期"反复重启闪屏"的根因)。这里按官方 REPL
+    // 的标准组合补装驱动,并把控制台 VFS 切到驱动通道,收发共用一条路。
+    if (!usb_serial_jtag_is_driver_installed()) {
+        usb_serial_jtag_driver_config_t cfg = {
+            .rx_buffer_size = 256,   // 命令行最长 18 字节,256 足够
+            .tx_buffer_size = 1024,  // 截屏载荷 150KB 分块流式发送,稍大更顺
+        };
+        esp_err_t err = usb_serial_jtag_driver_install(&cfg);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "串口驱动安装失败(%d),截屏协议不可用", err);
+            return;
+        }
+    }
+    usb_serial_jtag_vfs_use_driver();
+
+    BaseType_t ok = xTaskCreate(fap_task, "fap_shot", FAP_TASK_STACK, NULL,
+                                FAP_TASK_PRIO, NULL);
+    if (ok != pdPASS) {
+        ESP_LOGE(TAG, "截屏任务创建失败(栈 %d 字节)", FAP_TASK_STACK);
+        return;
+    }
+    ESP_LOGI(TAG, "截屏协议就绪:等待 FAP_SCREENSHOT_V1 命令");
 }
