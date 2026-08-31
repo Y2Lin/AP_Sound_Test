@@ -28,7 +28,7 @@ static const char *TAG = "fap_shot";
 #define FAP_CMD_LEN    (sizeof(FAP_CMD) - 1)
 #define FAP_LINE_MAX   24    // 命令行缓冲:略大于命令长度,溢出即丢弃重来
 #define FAP_TASK_STACK 8192  // lv_snapshot 在本任务内做整屏软件渲染,栈要余量
-#define FAP_TASK_PRIO  4     // 低于 UI/采集:截屏是偶发操作,不抢交互
+#define FAP_TASK_PRIO  3     // 低于 LVGL(4)/采集:截屏是偶发操作,不抢交互
 
 // 循环写直到全部发出:usb_serial_jtag_write_bytes 可能分包返回部分长度。
 static void write_all(const void *data, size_t len) {
@@ -81,8 +81,18 @@ static void fap_task(void *arg) {
     size_t used = 0;
     uint8_t buf[16];
     for (;;) {
+        // 三重防空转:任何一条失败都必须让出 CPU——高优先级忙等会饿死
+        // 空闲任务、触发任务看门狗,设备反复重启,表现为屏幕一直闪。
+        if (!usb_serial_jtag_is_driver_installed()) {
+            vTaskDelay(pdMS_TO_TICKS(500));  // 驱动未就绪:低频重试
+            continue;
+        }
         int n = usb_serial_jtag_read_bytes(buf, sizeof(buf), pdMS_TO_TICKS(500));
-        if (n <= 0) continue;  // 无输入:超时后继续等,任务常驻不退出
+        if (n < 0) {
+            vTaskDelay(pdMS_TO_TICKS(200));  // 读取出错:退避后再试
+            continue;
+        }
+        if (n == 0) continue;  // 无输入:超时后继续等,任务常驻不退出
         for (int i = 0; i < n; i++) {
             char c = (char)buf[i];
             if (c == '\r') continue;
