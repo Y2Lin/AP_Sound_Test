@@ -86,7 +86,9 @@ static const char *TAG = "demo_sound";
 #define SM_STATE_ERR   0x9AA7B0              // MIC FAIL:灰
 #define SM_HINT_COLOR  0x4A5A66              // 提示行:弱化墨色
 #define SM_MUTED       0x78909C              // 刻度/单位:灰蓝
-#define SM_BAR_TRACK   0x2E3A44              // 音量条底槽:深灰蓝
+#define SM_BAR_TRACK   0xE2E2D6              // 音量条底槽:浅纸灰(深色会在低
+                                             // 音量时裸露成"黑色块",被误认
+                                             // 为残留;亮色指示条在其上仍清晰)
 #define SM_BADGE_OK_BG 0x2E7D32              // MONITOR 徽章:绿底
 
 // 分区色(指示条/区带用亮色,放深槽与纸色面板上)。
@@ -592,13 +594,14 @@ void demo_sound_meter_enter(void) {
     s_scr = ui_pixel_screen_create("SOUND");
 
     // ---- 右上角电池图标(标题云下方、主面板上方):ink 框 + 纸底 + 触点 ----
-    // 百分比文字放电池图标左侧(标题牌右边到电池框之间约 40px 空隙)。
+    // 百分比文字紧贴电池图标左侧右对齐(x=160..196,标题牌阴影止于 x=160),
+    // 与图标组成"NN% [▮▮]"一组,垂直方向与图标对齐。
     block_at(s_scr, 196, 26, 35, 17, UI_INK);
     s_batt_body = block_at(s_scr, 197, 27, 31, 15, UI_PAPER);
     block_at(s_scr, 231, 31, 4, 9, UI_INK);
     s_batt_fill = block_at(s_scr, 199, 29, 0, 11, UI_GRASS);   // 首帧按电量刷新
-    s_batt_pct = label_at(s_scr, 152, 31, &lv_font_montserrat_14, UI_INK);
-    lv_obj_set_width(s_batt_pct, 40);
+    s_batt_pct = label_at(s_scr, 160, 27, &lv_font_montserrat_14, UI_INK);
+    lv_obj_set_width(s_batt_pct, 36);
     lv_obj_set_style_text_align(s_batt_pct, LV_TEXT_ALIGN_RIGHT, 0);
     lv_label_set_text(s_batt_pct, "--%");
 

@@ -73,6 +73,7 @@ typedef struct {
     lv_obj_t *eye_l;     // 左眼
     lv_obj_t *eye_r;     // 右眼
     lv_obj_t *mouth;     // 嘴(位置/大小按分区变化)
+    int       base_y;    // 创建时的锚定 y:所有位移动画以它为基准
 } mascot_parts_t;
 
 static mascot_parts_t s_parts;
@@ -105,6 +106,7 @@ lv_obj_t *ui_pixel_mascot_create(lv_obj_t *parent, int x, int y)
     block(m, 21, 44, 9, 4, UI_INK);
     start_blink(s_parts.eye_l);
     start_blink(s_parts.eye_r);
+    s_parts.base_y = y;             // 位移基准:动画必须回到这里,不得漂移
     lv_obj_set_user_data(m, &s_parts);
     return m;
 }
@@ -137,7 +139,11 @@ static void start_blink(lv_obj_t *eye)
 void ui_pixel_mascot_jump(lv_obj_t *mascot)
 {
     if (!mascot) return;
-    int y = lv_obj_get_y(mascot);
+    /* 起点固定为创建时的锚定 y(而非"当前 y"):跳跃常与浮动动画并存,
+     * 若以当前 y 为起点,动画在半途被打断重启会逐步累积位移。
+     * 以 base_y 为基准则每次跳跃都回到同一位置,绝不漂移。 */
+    mascot_parts_t *p = lv_obj_get_user_data(mascot);
+    int y = p ? p->base_y : lv_obj_get_y(mascot);
     lv_anim_delete(mascot, jump_y);
     lv_anim_t anim;
     lv_anim_init(&anim);
@@ -175,9 +181,12 @@ void ui_pixel_mascot_set_zone(lv_obj_t *mascot, int zone, bool alarm)
     lv_obj_set_pos(p->mouth, 19 - st->mouth_w / 2, 23 - (st->mouth_h + 1) / 2);
 
     // 浮动:停掉旧的,按新幅度重启;幅度 0(安静/正常)= 静止。
+    // 区间固定为 [base_y-bob_px, base_y]:此前以"当前 y"为起点,音量在分区
+    // 边界抖动会反复重建动画,起点被半途值顶替,区间不断上移--机器人
+    // 最终漂出屏幕顶。锚定 base_y 后区间恒定,重建多少次都不漂移。
     lv_anim_delete(mascot, bob_y);
     if (st->bob_px > 0 && st->bob_ms > 0) {
-        int y = lv_obj_get_y(mascot);
+        int y = p->base_y;
         lv_anim_t anim;
         lv_anim_init(&anim);
         lv_anim_set_var(&anim, mascot);
