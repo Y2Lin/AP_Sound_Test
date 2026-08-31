@@ -134,7 +134,8 @@ static lv_obj_t   *s_hint, *s_mascot;
 // 电池图标:ink 外框 + 纸色内底 + 右侧触点 + 按电量变宽/变色的填充条 + 百分比文字。
 static lv_obj_t   *s_batt_body, *s_batt_fill, *s_batt_pct;
 // 亮度瞬态面板:调节时显示 1.5s(标题 + 数值 + 进度条),超时自动隐藏。
-static lv_obj_t   *s_bl_panel, *s_bl_val, *s_bl_bar;
+// s_bl_shadow 是面板的墨色投影,与面板体成对显示/隐藏(见 bl_popup_*)。
+static lv_obj_t   *s_bl_panel, *s_bl_shadow, *s_bl_val, *s_bl_bar;
 static lv_timer_t *s_bl_popup_timer;
 static lv_timer_t *s_timer;
 
@@ -435,8 +436,11 @@ static void battery_refresh(int soc) {
 
 // 亮度瞬态面板:调节亮度时短暂显示,超时自动隐藏。定时器平时 paused,
 // 每次调节 reset+resume 重新计时;回调运行在 LVGL 任务(lv_timer)。
+// 面板体与墨色投影是两个对象,显示/隐藏必须成对操作--只藏面板体会
+// 在原处留下一大块墨色残影(用户可见的"黑色色块")。
 static void bl_popup_hide_cb(lv_timer_t *t) {
-    if (s_bl_panel) lv_obj_add_flag(s_bl_panel, LV_OBJ_FLAG_HIDDEN);
+    if (s_bl_panel)  lv_obj_add_flag(s_bl_panel, LV_OBJ_FLAG_HIDDEN);
+    if (s_bl_shadow) lv_obj_add_flag(s_bl_shadow, LV_OBJ_FLAG_HIDDEN);
     lv_timer_pause(t);
 }
 
@@ -445,6 +449,7 @@ static void bl_popup_show(void) {
     lv_label_set_text_fmt(s_bl_val, "%d%%", (int)s_bright_pct);
     lv_bar_set_value(s_bl_bar, (int32_t)s_bright_pct, LV_ANIM_OFF);
     lv_obj_remove_flag(s_bl_panel, LV_OBJ_FLAG_HIDDEN);
+    if (s_bl_shadow) lv_obj_remove_flag(s_bl_shadow, LV_OBJ_FLAG_HIDDEN);
     lv_timer_reset(s_bl_popup_timer);
     lv_timer_resume(s_bl_popup_timer);
 }
@@ -699,8 +704,9 @@ void demo_sound_meter_enter(void) {
     // 开机先给"安静"表情;首帧快照(80ms 内)会按实测分区切换。
     ui_pixel_mascot_set_zone(s_mascot, (int)SOUND_METER_ZONE_QUIET, false);
 
-    // ---- 亮度瞬态面板(最后创建,置于最上层;平时隐藏)----
-    s_bl_panel = ui_pixel_panel_create(s_scr, 40, 196, 160, 50, UI_PAPER);
+    // ---- 亮度瞬态面板(最后创建,置于最上层;平时隐藏,投影一起藏)----
+    s_bl_panel = ui_pixel_panel_create_ex(s_scr, 40, 196, 160, 50, UI_PAPER,
+                                          &s_bl_shadow);
     {
         lv_obj_t *cap = label_at(s_bl_panel, 12, 8,
                                  &lv_font_montserrat_14, SM_CAP_AVG);
@@ -723,6 +729,7 @@ void demo_sound_meter_enter(void) {
                                   LV_PART_INDICATOR);
     }
     lv_obj_add_flag(s_bl_panel, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(s_bl_shadow, LV_OBJ_FLAG_HIDDEN);
     s_bl_popup_timer = lv_timer_create(bl_popup_hide_cb, SM_BL_POPUP_MS, NULL);
     lv_timer_pause(s_bl_popup_timer);   // 平时不跑,调节时才计时
 
@@ -780,7 +787,7 @@ void demo_sound_meter_exit(void) {
     s_hint = NULL;
     s_mascot = NULL;
     s_batt_body = s_batt_fill = s_batt_pct = NULL;
-    s_bl_panel = s_bl_val = s_bl_bar = NULL;
+    s_bl_panel = s_bl_shadow = s_bl_val = s_bl_bar = NULL;
     // 任务与队列常驻:下次进入免重建;未落盘的阈值/亮度由任务在后台防抖写完。
 }
 

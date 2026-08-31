@@ -14,8 +14,13 @@
 #define UI_MUTED      0xD9E7EC
 
 lv_obj_t *ui_pixel_screen_create(const char *title);
+// 像素风面板:墨色投影 + 纸色面板体(两个平级对象)。
+// 常驻面板用 ui_pixel_panel_create;弹出式面板(要整体隐藏/显示的)
+// 用 _ex 版本拿回阴影指针,隐藏时必须连阴影一起藏,否则留墨色残影。
 lv_obj_t *ui_pixel_panel_create(lv_obj_t *parent, int x, int y, int w, int h,
                                 uint32_t color);
+lv_obj_t *ui_pixel_panel_create_ex(lv_obj_t *parent, int x, int y, int w, int h,
+                                   uint32_t color, lv_obj_t **shadow_out);
 lv_obj_t *ui_pixel_label(lv_obj_t *parent, const char *text,
                          const lv_font_t *font, uint32_t color);
 lv_obj_t *ui_pixel_mascot_create(lv_obj_t *parent, int x, int y);

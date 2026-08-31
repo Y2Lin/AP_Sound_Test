@@ -54,15 +54,25 @@ lv_obj_t *ui_pixel_screen_create(const char *title)
     return scr;
 }
 
-lv_obj_t *ui_pixel_panel_create(lv_obj_t *parent, int x, int y, int w, int h,
-                                uint32_t color)
+lv_obj_t *ui_pixel_panel_create_ex(lv_obj_t *parent, int x, int y, int w, int h,
+                                   uint32_t color, lv_obj_t **shadow_out)
 {
-    block(parent, x + 5, y + 6, w, h, UI_INK);
+    /* 阴影与面板体是两个平级对象:弹出式面板(如亮度调节)需要把阴影一并
+     * 隐藏/显示,否则只藏面板体会留下一块墨色"残影"。常驻面板不关心,
+     * shadow_out 传 NULL 即可。 */
+    lv_obj_t *shadow = block(parent, x + 5, y + 6, w, h, UI_INK);
     lv_obj_t *panel = block(parent, x, y, w, h, color);
     lv_obj_set_style_border_color(panel, lv_color_hex(UI_INK), 0);
     lv_obj_set_style_border_width(panel, 4, 0);
     lv_obj_set_style_pad_all(panel, 7, 0);
+    if (shadow_out) *shadow_out = shadow;
     return panel;
+}
+
+lv_obj_t *ui_pixel_panel_create(lv_obj_t *parent, int x, int y, int w, int h,
+                                uint32_t color)
+{
+    return ui_pixel_panel_create_ex(parent, x, y, w, h, color, NULL);
 }
 
 // 吉祥物需要动态换色的部件(分区表情用)。挂在容器 user_data 上;
