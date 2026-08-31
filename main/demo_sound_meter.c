@@ -1,4 +1,5 @@
-// main/demo_sound_meter.c -- 周围音量检测页:麦克风 RMS -> 伪 SPL 读数 + 音量条 + 阈值告警。
+// main/demo_sound_meter.c -- 周围音量检测页(本应用唯一页面,开机由 main.c 加载):
+//   麦克风 RMS -> 伪 SPL 读数 + 音量条 + 阈值告警。
 //
 // 并发与生命周期约定(遵循硬件指南 §8 的音频退出契约):
 //   - bsp_audio_read 会阻塞约一帧(16ms),只能在 worker 任务里调;
@@ -11,7 +12,6 @@
 //     NVS 落盘由常驻任务防抖执行,绝不在回调/exit 里写。
 //   - 纯逻辑见 sound_meter_model.c;本文件只做 I/O、队列、UI 与持久化。
 #include "demo.h"
-#include "demo_radio.h"     // demo_radio_nvs_prepare():幂等的 NVS 初始化
 #include "bsp_audio.h"
 #include "ui_pixel.h"
 #include "sound_meter_model.h"
@@ -67,15 +67,17 @@ static volatile bool s_thr_dirty;       // 阈值已变更,待防抖写 NVS
 static volatile uint32_t s_thr_changed_ms;
 static sound_meter_model_t s_model;     // 归采集任务所有(阈值可由按键原子改)
 static bool s_last_alarm;               // UI 当前呈现的告警态(换色判定)
+static bool s_nvs_warned;               // NVS 打开失败只告警一次,避免刷屏
 
 static uint32_t now_ms(void) {
     return (uint32_t)(esp_timer_get_time() / 1000);
 }
 
 // ------------------------------------------------------------------ NVS ----
+// NVS 分区由 app_main 统一初始化(失败不阻塞启动);这里只做打开与读写,
+// 打不开就回退默认值/放弃写入,不擦除分区。
 
 static int32_t threshold_load_nvs(void) {
-    if (demo_radio_nvs_prepare() != ESP_OK) return SOUND_METER_THR_DEFAULT_DB;
     nvs_handle_t h;
     if (nvs_open(SM_NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK)
         return SOUND_METER_THR_DEFAULT_DB;   // 首次使用等场景:读不到就用默认
@@ -88,10 +90,12 @@ static int32_t threshold_load_nvs(void) {
 
 // 只在常驻采集任务里调用;失败仅记日志,不擦除分区,内存中的阈值继续生效。
 static void threshold_store_nvs(int32_t db) {
-    if (demo_radio_nvs_prepare() != ESP_OK) return;
     nvs_handle_t h;
     if (nvs_open(SM_NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) {
-        ESP_LOGW(TAG, "NVS 打开失败,阈值仅保留在内存");
+        if (!s_nvs_warned) {
+            s_nvs_warned = true;
+            ESP_LOGW(TAG, "NVS 打开失败,阈值仅保留在内存");
+        }
         return;
     }
     esp_err_t err = nvs_set_u8(h, SM_NVS_KEY, (uint8_t)db);
