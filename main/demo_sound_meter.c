@@ -43,7 +43,7 @@
 //   - 纯逻辑见 sound_meter_model.c;本文件只做 I/O、队列、UI 与持久化。
 #include "demo.h"
 #include "bsp_audio.h"
-#include "bsp_battery.h"    // bsp_battery_soc:右上角电量图标
+#include "bsp_battery.h"    // bsp_battery_soc/mv:电量图标与满充显示校正
 #include "bsp_display.h"   // bsp_display_backlight:亮度/息屏/亮屏
 #include "ui_pixel.h"
 #include "ui_pixel_math.h"  // 电量映射与吉祥物分区表情(可主机测试)
@@ -130,6 +130,7 @@ typedef struct {
     bool     alarm;
     bool     mic_error;
     int16_t  soc;           // 电量百分比 0..100;读不到为 -1
+    int16_t  mv;            // 电池电压 mV;读不到为 -1(满充显示校正用)
 } sm_snapshot_t;
 
 static lv_obj_t   *s_scr, *s_panel_main, *s_panel_stats;
@@ -165,6 +166,7 @@ static volatile uint32_t s_bright_changed_ms;
 static sound_meter_model_t s_model;     // 归采集任务所有(阈值可由按键原子改)
 static sound_meter_wake_t  s_wake;      // 音量剧变检测(归采集任务所有)
 static volatile int16_t   s_soc = -1;   // 最近一次电量读数(归采集任务)
+static volatile int16_t   s_mv  = -1;   // 最近一次电池电压 mV(归采集任务)
 static bool s_last_alarm;               // UI 当前呈现的告警态(换色判定)
 static int  s_last_zone;                // UI 当前呈现的响度分区(吉祥物表情)
 static bool s_last_mic_err;             // UI 当前呈现的麦克风失效态(分区文字判定)
@@ -252,6 +254,7 @@ static void publish_snapshot(bool mic_error) {
         .alarm        = s_model.alarm_active,
         .mic_error    = mic_error,
         .soc          = s_soc,
+        .mv           = s_mv,
     };
     (void)xQueueSend(s_queue, &snap, 0);
 }
@@ -356,10 +359,12 @@ static void sm_task(void *arg) {
         if (!s_active) continue;   // 读完才发现退出请求:丢弃本帧
 
         // 电量:每 ~5s 读一次 CW2017(在线时 I2C 读 <1ms,失败也不重试刷屏)。
-        // 读不到(无电量计/未应答)得 -1,UI 显示灰块。
+        // 读不到(无电量计/未应答)得 -1,UI 显示灰块。电压与电量同帧读,
+        // 供 UI 侧满充显示校正(通用曲线满充常停在 99%)。
         if (++frames_since_batt >= SM_BATT_EVERY_FRAMES) {
             frames_since_batt = 0;
             s_soc = (int16_t)bsp_battery_soc();
+            s_mv  = (int16_t)bsp_battery_mv();
         }
 
         // RMS:平方和 -> 整数平方根(全整数,C3 无 FPU,不引入软浮点)。
@@ -516,10 +521,13 @@ static void ui_tick(lv_timer_t *t) {
     int zone = snap.mic_error ? (int)SOUND_METER_ZONE_QUIET
                               : (int)sound_meter_zone_of(snap.db_x10);
 
-    // 电池图标:只在读数变化时重绘(每 ~5s 刷新一次)。
-    if (snap.soc != (int16_t)s_last_soc_ui) {
-        s_last_soc_ui = snap.soc;
-        battery_refresh(snap.soc);
+    // 电池图标:只在显示电量变化时重绘(每 ~5s 刷新一次)。
+    // 显示值经满充校正:通用 Li-Poly 曲线满电点偏高,满充读数停在 99%,
+    // soc>=99 且电压>=UI_BATT_FULL_MV 时按 100 显示(原始读数仍在快照里)。
+    int soc_disp = ui_pixel_battery_display_soc(snap.soc, snap.mv);
+    if (soc_disp != s_last_soc_ui) {
+        s_last_soc_ui = soc_disp;
+        battery_refresh(soc_disp);
     }
 
     if (snap.mic_error) {

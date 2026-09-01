@@ -27,6 +27,12 @@ int ui_pixel_battery_fill_w(int soc, int max_w)
     return (soc * max_w) / 100;
 }
 
+int ui_pixel_battery_display_soc(int soc, int mv)
+{
+    if (soc >= 99 && mv >= UI_BATT_FULL_MV) return 100;
+    return soc;
+}
+
 // 分区表情表:下标对应 sound_meter_model.h 的 zone 枚举(0..4)。
 // 设计:天线灯=分区亮色(蓝/绿/黄/橙/红),脸=同色系浅底,眼/嘴=同色系深色;
 // 嘴随响度张大,浮动幅度(越响越闹)同步加码,安静/正常保持静止。

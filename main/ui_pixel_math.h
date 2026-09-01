@@ -19,6 +19,14 @@ int ui_pixel_battery_level(int soc);
 // 填充宽度:soc% 映射到 0..max_w 像素;soc<0 或 max_w<=0 返回 0。
 int ui_pixel_battery_fill_w(int soc, int max_w);
 
+// 满充显示校正阈值(mV):CW2017 跑通用 Li-Poly 曲线,满电点高于实际电芯
+// 的充电终止电压,满充读数常停在 99%。电压达到该阈值即视为满充。
+#define UI_BATT_FULL_MV 4150
+
+// 显示电量:soc>=99 且 mv>=UI_BATT_FULL_MV 视为满充,按 100 显示;
+// 其余情况原样返回(含读取失败的 -1)。快照仍携带原始读数,校正只做显示。
+int ui_pixel_battery_display_soc(int soc, int mv);
+
 // ---------------------------------------------------------------------------
 // 吉祥物表情样式:按响度分区(见 sound_meter_model.h 的 zone 枚举 0..4)
 // 换脸/眼/嘴颜色与嘴型,并用上下浮动幅度表达"越响越闹"。alarm 态覆盖为

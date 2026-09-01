@@ -25,6 +25,22 @@ static void test_battery_fill_w(void)
     assert(ui_pixel_battery_fill_w(80, -5) == 0);
 }
 
+// 满充显示校正:通用曲线满充停在 99%,电压足够高时按 100 显示;
+// 电压不足、soc 不足、读取失败(-1)一律不校正。
+static void test_battery_display_soc(void)
+{
+    assert(ui_pixel_battery_display_soc(99, 4200) == 100);
+    assert(ui_pixel_battery_display_soc(99, UI_BATT_FULL_MV) == 100);        // 边界
+    assert(ui_pixel_battery_display_soc(99, UI_BATT_FULL_MV - 1) == 99);     // 差 1mV
+    assert(ui_pixel_battery_display_soc(99, 4100) == 99);                    // 电压不足
+    assert(ui_pixel_battery_display_soc(100, 4100) == 100);                  // 本来就满
+    assert(ui_pixel_battery_display_soc(98, 4200) == 98);                    // soc 不足
+    assert(ui_pixel_battery_display_soc(50, 4200) == 50);
+    assert(ui_pixel_battery_display_soc(99, -1) == 99);                      // 电压读失败
+    assert(ui_pixel_battery_display_soc(-1, 4200) == -1);                    // 电量读失败
+    assert(ui_pixel_battery_display_soc(-1, -1) == -1);
+}
+
 // 吉祥物样式:分区单调(嘴越来越大、浮动越来越闹),
 // 安静/正常静止;告警覆盖为白脸红眼;zone 越界钳位。
 static void test_mascot_style(void)
@@ -72,6 +88,7 @@ int main(void)
 
     test_battery_level();
     test_battery_fill_w();
+    test_battery_display_soc();
     test_mascot_style();
     return 0;
 }

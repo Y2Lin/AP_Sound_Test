@@ -6,6 +6,14 @@
 
 ## Unreleased
 
+- Corrected the full-charge battery display: with the open-source BSP's generic
+  Li-Poly profile the CW2017's full point sits above the actual cell's charge
+  termination voltage, so a full battery showed a stuck 99%. The acquisition task
+  now also reads the voltage, and the UI applies a host-tested
+  `ui_pixel_battery_display_soc()` correction: soc >= 99 with voltage
+  >= 4150 mV displays as 100%, everything else shows the raw reading
+  (including the gray unknown block on read failure). Snapshots still carry
+  the raw readings; the correction is display-only.
 - Added the read-only FAP_SCREENSHOT_V1 serial protocol required by the
   community publisher: a dedicated task watches the USB-serial console for
   the `FAP_SCREENSHOT_V1` line and replies with a header plus the current
