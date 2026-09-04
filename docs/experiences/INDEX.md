@@ -35,3 +35,4 @@ rather than merged into an existing one.
 
 - [Implementing the FAP_SCREENSHOT_V1 Serial Screenshot Protocol](y2lin/serial-screenshot-protocol.md) — install the USB-serial-JTAG driver first, substring-match the command, snapshot into a statically reserved full-screen buffer, chunk payload writes to the tx ring buffer, and mute logs during the binary window.
 - [Sound-Meter UI: Smoothing, Anchors, and Stray Blocks](y2lin/meter-ui-smoothing-and-layout.md) — an asymmetric EMA for live readouts, creation-time anchors for mascot animations, the usual suspects behind stray screen blocks, and LVGL pool exhaustion as a white-screen cause.
+- [FAP_SCREENSHOT_V1, Second Landing: Streamed Capture and the USB TX Ring](y2lin/screenshot-streaming-and-usb-tx-ring.md) — a flush-callback streaming capture pipeline, bounded ring slots for no-PSRAM memory budgets, the 256B default TX-ring trap, machine-readable failure codes, and four Web Serial host-side disciplines.

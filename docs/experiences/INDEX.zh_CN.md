@@ -29,3 +29,4 @@
 
 - [实现 FAP_SCREENSHOT_V1 串口截屏协议](y2lin/serial-screenshot-protocol.zh_CN.md) — 先装 USB-Serial-JTAG 驱动、按子串匹配命令、快照渲染进静态整屏缓冲、按发送环形缓冲分块流载荷、二进制窗口内静默日志。
 - [音量计 UI：读数平滑、动画锚定与杂色块](y2lin/meter-ui-smoothing-and-layout.zh_CN.md) — 非对称 EMA 平滑实时读数、吉祥物动画锚定到创建位置、屏上杂色块的常见根因，以及 LVGL 池耗尽导致开机白屏。
+- [FAP_SCREENSHOT_V1 第二次落地：流式采集与 USB TX 环](y2lin/screenshot-streaming-and-usb-tx-ring.zh_CN.md) — 拦截刷新回调的流式采集管线、无 PSRAM 下的有界环形槽内存预算、TX 环默认 256B 的坑、机器可读失败原因码，以及 Web Serial 主机侧四条纪律。
